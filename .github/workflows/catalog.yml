@@ -31,6 +31,12 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwayland-dev libegl-dev libgles-dev libdrm-dev \
+            libudev-dev libinput-dev libsystemd-dev pkg-config
       - name: Build catalog validator
         run: cargo build --locked --release -p touchbar-cli -p touchbar-plugin-host
       - name: Enforce permanent alias identity
