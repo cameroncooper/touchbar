@@ -9,7 +9,7 @@ use std::{
 use anyhow::{Context as _, Result, anyhow, bail};
 use glow::HasContext;
 use khronos_egl as egl;
-use touchbar_protocol::hardware_ipc::HardwareSwapchain;
+use touchbar_protocol::hardware_ipc::{HardwareSwapchain, OutputTransform};
 
 use crate::{
     DRM_FORMAT_MOD_INVALID, DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_XRGB8888, DmabufBufferData,
@@ -76,6 +76,7 @@ struct OutputBuffer {
 
 struct OutputSwapchain {
     info: HardwareSwapchain,
+    transform: OutputTransform,
     buffers: Vec<OutputBuffer>,
 }
 
@@ -283,10 +284,17 @@ impl GpuCompositor {
         if info.logical_height != self.height || info.logical_width < self.width {
             bail!("ADP output logical size is incompatible with the compositor scene");
         }
-        if info.physical_width != info.logical_height || info.physical_height != info.logical_width
-        {
-            bail!("ADP output must be a 90-degree rotation of logical coordinates");
-        }
+        // The presenter declares its physical scanout layout; the compositor
+        // derives the transform rather than assuming one, so an already
+        // landscape panel and a portrait one share this path.
+        let transform = match info.transform() {
+            Some(transform) => transform,
+            None => bail!(
+                "output physical size {}x{} is neither the logical size nor a 90-degree rotation of it",
+                info.physical_width,
+                info.physical_height
+            ),
+        };
 
         self.destroy_output_swapchain();
         let mut imported = Vec::with_capacity(buffers.len());
@@ -301,6 +309,7 @@ impl GpuCompositor {
         }
         self.output = Some(OutputSwapchain {
             info,
+            transform,
             buffers: imported,
         });
         Ok(())
@@ -343,21 +352,41 @@ impl GpuCompositor {
             );
             self.gl.clear(glow::COLOR_BUFFER_BIT);
 
-            // Physical X is logical Y and physical Y is logical X. Restrict
-            // rendering to the visible 60-pixel width and center the narrower
-            // scene within the full 2008-pixel logical strip.
-            self.gl.viewport(
-                0,
-                logical_left as i32,
-                output.info.physical_width as i32,
-                self.width as i32,
-            );
+            // Place the composed scene into the presenter's scanout buffer,
+            // centering it when the panel is wider than the scene. The
+            // transform is whatever the presenter declared, not an assumption.
+            let transpose = match output.transform {
+                OutputTransform::QuarterTurn => {
+                    // Physical X is logical Y and physical Y is logical X, so
+                    // the visible extent is the panel's narrow physical width
+                    // and the scene runs along physical Y.
+                    self.gl.viewport(
+                        0,
+                        logical_left as i32,
+                        output.info.physical_width as i32,
+                        self.width as i32,
+                    );
+                    true
+                }
+                OutputTransform::Identity => {
+                    // Axes already agree; the scene maps straight across.
+                    self.gl.viewport(
+                        logical_left as i32,
+                        0,
+                        self.width as i32,
+                        self.height as i32,
+                    );
+                    false
+                }
+            };
             self.gl.disable(glow::BLEND);
             // Match tiny-dfr's +90-degree logical-to-physical transform:
             // physical_x = height - 1 - logical_y, physical_y = logical_x.
-            // Transposition alone mirrors the 60-pixel axis and makes text
-            // appear upside down on the installed panel.
-            self.draw_texture_transformed(self.scene_texture, true, 1.0, true);
+            // Transposition alone mirrors the narrow axis and makes text
+            // appear upside down on the installed panel, so the vertical flip
+            // is applied for both orientations to correct GL's bottom-up
+            // origin against top-down scanout.
+            self.draw_texture_transformed(self.scene_texture, true, 1.0, transpose);
 
             // Initial cross-device synchronization is explicit and simple.
             // This can become a native fence passed to the presenter later.

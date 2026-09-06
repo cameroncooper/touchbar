@@ -2158,7 +2158,9 @@ fn run_hardware_session(
     duration: Option<Duration>,
 ) -> Result<()> {
     const BUFFER_COUNT: usize = 3;
-    const ALLOCATION_WIDTH: u32 = 64;
+    /// Scanout rows are allocated on this boundary; 60 physical pixels
+    /// therefore still allocate the 64 this path has always used.
+    const ALLOCATION_ALIGNMENT: u32 = 64;
 
     let card = Card::open(node, true)?;
     card.set_client_capability(ClientCapability::UniversalPlanes, true)?;
@@ -2168,6 +2170,16 @@ fn run_hardware_session(
     let selection = select_touchbar(&card, true)?;
     print_selection(node, &selection);
     let (display_width, display_height) = selection.mode.size();
+    // The panel's own orientation decides the logical mapping. A portrait
+    // scanout (Apple silicon `adp`) is a quarter turn of the landscape scene;
+    // an already landscape panel (Intel T2 `appletbdrm`) needs no rotation.
+    // The compositor derives the same transform from these four numbers.
+    let (logical_width, logical_height) = if display_height > display_width {
+        (u32::from(display_height), u32::from(display_width))
+    } else {
+        (u32::from(display_width), u32::from(display_height))
+    };
+    let allocation_width = u32::from(display_width).next_multiple_of(ALLOCATION_ALIGNMENT);
 
     let mut dumb_buffers = Vec::with_capacity(BUFFER_COUNT);
     let mut framebuffers = Vec::with_capacity(BUFFER_COUNT);
@@ -2175,7 +2187,7 @@ fn run_hardware_session(
     for _ in 0..BUFFER_COUNT {
         let dumb = card
             .create_dumb_buffer(
-                (ALLOCATION_WIDTH, u32::from(display_height)),
+                (allocation_width, u32::from(display_height)),
                 DrmFourcc::Xrgb8888,
                 32,
             )
@@ -2195,8 +2207,8 @@ fn run_hardware_session(
         bail!("ADP returned inconsistent direct-output pitches");
     }
     let info = HardwareSwapchain {
-        logical_width: u32::from(display_height),
-        logical_height: u32::from(display_width),
+        logical_width,
+        logical_height,
         physical_width: u32::from(display_width),
         physical_height: u32::from(display_height),
         format: u32::from_le_bytes(*b"XR24"),
@@ -2209,7 +2221,7 @@ fn run_hardware_session(
     let mut touch_input = match TouchInput::open(
         info.logical_width,
         info.logical_height,
-        DEFAULT_REGION_WIDTH,
+        info.logical_width,
         info.logical_height,
     ) {
         Ok(input) => Some(input),
@@ -2257,7 +2269,7 @@ fn run_hardware_session(
 
     println!(
         "hardware-session waiting buffers={BUFFER_COUNT} size={}x{} pitch={pitch} duration={}",
-        ALLOCATION_WIDTH,
+        allocation_width,
         display_height,
         duration.map_or_else(
             || "persistent".into(),

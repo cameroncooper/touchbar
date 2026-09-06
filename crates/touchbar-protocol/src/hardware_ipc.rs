@@ -124,6 +124,16 @@ impl SystemKey {
     }
 }
 
+/// Mapping from the compositor's logical landscape scene to the presenter's
+/// physical scanout buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputTransform {
+    /// Physical and logical axes agree; the scene is scanned out as composed.
+    Identity,
+    /// Physical X is logical Y and physical Y is logical X.
+    QuarterTurn,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HardwareSwapchain {
     pub logical_width: u32,
@@ -170,6 +180,27 @@ impl HardwareSwapchain {
             return Err(invalid_data("swapchain buffer is smaller than its layout"));
         }
         Ok(self)
+    }
+
+    /// How this swapchain's physical scanout layout relates to the
+    /// compositor's logical landscape coordinates.
+    ///
+    /// The presenter declares its physical size in the swapchain header, so
+    /// the transform is derived rather than assumed. A panel that scans out
+    /// portrait (Apple silicon `adp`) and one that is already landscape
+    /// (Intel T2 `appletbdrm`) therefore share one contract, and a buffer
+    /// whose physical size matches neither orientation is rejected.
+    pub fn transform(self) -> Option<OutputTransform> {
+        if self.physical_width == self.logical_width && self.physical_height == self.logical_height
+        {
+            Some(OutputTransform::Identity)
+        } else if self.physical_width == self.logical_height
+            && self.physical_height == self.logical_width
+        {
+            Some(OutputTransform::QuarterTurn)
+        } else {
+            None
+        }
     }
 
     fn encode(self) -> io::Result<[u8; SWAPCHAIN_HEADER_SIZE]> {
@@ -612,6 +643,35 @@ mod tests {
     use std::{fs::File, os::fd::AsFd};
 
     use super::*;
+
+    #[test]
+    fn portrait_scanout_is_a_quarter_turn_of_logical_coordinates() {
+        let adp = info();
+        assert_eq!(adp.transform(), Some(OutputTransform::QuarterTurn));
+    }
+
+    #[test]
+    fn landscape_scanout_needs_no_rotation() {
+        let landscape = HardwareSwapchain {
+            physical_width: 2008,
+            physical_height: 60,
+            pitch: 2008 * 4,
+            buffer_size: 2008 * 4 * 60,
+            ..info()
+        };
+        assert_eq!(landscape.transform(), Some(OutputTransform::Identity));
+        landscape.validate().unwrap();
+    }
+
+    #[test]
+    fn scanout_matching_neither_orientation_has_no_transform() {
+        let skewed = HardwareSwapchain {
+            physical_width: 61,
+            physical_height: 2008,
+            ..info()
+        };
+        assert_eq!(skewed.transform(), None);
+    }
 
     fn info() -> HardwareSwapchain {
         HardwareSwapchain {
