@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: Format, lint, and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwayland-dev libegl-dev libgles-dev libdrm-dev \
+            libudev-dev libinput-dev pkg-config
+      - name: Install toolchain components
+        run: rustup component add rustfmt clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-check-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-check-
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace
+      # These longer deterministic campaigns exercise the production filesystem
+      # backends and async lifecycle. They are ignored by default so the
+      # ordinary suite stays fast; the release gate must not skip them.
+      - name: Security campaigns
+        run: cargo test -p touchbar-plugin-supervisor security_campaign_ -- --ignored --test-threads=1
+      # Fuzz targets live outside the workspace and have their own lockfile, so
+      # a signature change there is invisible to the workspace build.
+      - name: Fuzz targets compile
+        run: cargo check --manifest-path fuzz/Cargo.toml --bins
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-bin
+      - name: Install cargo-audit
+        run: command -v cargo-audit >/dev/null || cargo install cargo-audit --locked
+      - name: Audit workspace
+        run: cargo audit
+      - name: Audit fuzz targets
+        run: cargo audit --file fuzz/Cargo.lock
+
+  sandbox:
+    name: Supervised component host
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwayland-dev libegl-dev libgles-dev libdrm-dev \
+            libudev-dev libinput-dev pkg-config
+      - name: Install the component toolchain
+        run: rustup target add wasm32-wasip2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-sandbox-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-sandbox-
+      # Runs a real sandboxed component end to end: supervisor, broker,
+      # confinement, and the component host. No GPU or Touch Bar required.
+      - name: Supervised component host
+        run: ./scripts/test-supervised-component-host.sh
+      - name: Permission CLI
+        run: ./scripts/test-permission-cli.sh
+
+  packaging:
+    name: Units, udev rules, and installer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwayland-dev libegl-dev libgles-dev libdrm-dev \
+            libudev-dev libinput-dev pkg-config systemd
+      - name: Install the component toolchain
+        run: rustup target add wasm32-wasip2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-packaging-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-packaging-
+      # Validates both units with systemd-analyze, verifies the udev rules, and
+      # checks every installed executable against its build artifact. It never
+      # writes to /usr or changes service state.
+      - name: Packaging
+        run: ./scripts/test-packaging.sh

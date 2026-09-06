@@ -1,0 +1,23 @@
+pkgbase = touchbar
+	pkgdesc = GPU-composited Touch Bar runtime and sandboxed plugin platform for MacBook Pro
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/cameroncooper/touchbar
+	install = touchbar.install
+	arch = aarch64
+	arch = x86_64
+	license = MIT
+	license = Apache-2.0
+	makedepends = cargo
+	depends = systemd
+	depends = polkit
+	depends = wayland
+	depends = libdrm
+	depends = mesa
+	depends = libinput
+	depends = dbus
+	depends = tiny-dfr
+	source = touchbar-0.1.0.tar.gz::https://github.com/cameroncooper/touchbar/archive/refs/tags/v0.1.0.tar.gz
+	sha256sums = 78737ec1a479f2cf84c74984d344cd0c47805149e89c886dcd131def2097a8ac
+
+pkgname = touchbar

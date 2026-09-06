@@ -1,0 +1,73 @@
+# Maintainer: Cameron Cooper <c@meron.cc>
+pkgname=touchbar
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="GPU-composited Touch Bar runtime and sandboxed plugin platform for MacBook Pro"
+# aarch64 covers the Apple silicon `adp` panel; x86_64 covers Intel T2
+# `appletbdrm`, whose presentation path is implemented but not yet verified.
+arch=('aarch64' 'x86_64')
+url="https://github.com/cameroncooper/touchbar"
+license=('MIT' 'Apache-2.0')
+depends=('systemd' 'polkit' 'wayland' 'libdrm' 'mesa' 'libinput' 'dbus')
+# tiny-dfr is the verified rollback target. Activation refuses to proceed
+# without its unit installed, so this is a hard dependency rather than an
+# optional one.
+depends+=('tiny-dfr')
+makedepends=('cargo')
+install="${pkgname}.install"
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('78737ec1a479f2cf84c74984d344cd0c47805149e89c886dcd131def2097a8ac')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --frozen --release \
+        -p touchbard -p touchbar-sessiond -p touchbar-cli \
+        -p touchbar-plugin-host -p touchbar-plugin-supervisor
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo test --frozen --workspace
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+
+    # Internal daemons and helpers are not on PATH; touchbarctl is the only
+    # supported entry point besides the two activation commands.
+    for binary in touchbard touchbar-sessiond touchbar-plugin-host \
+                  touchbar-plugin-supervisor touchbar-secret-helper; do
+        install -Dm0755 "target/release/$binary" "$pkgdir/usr/lib/touchbar/$binary"
+    done
+    install -Dm0755 target/release/touchbarctl "$pkgdir/usr/bin/touchbarctl"
+
+    install -Dm0755 scripts/service-admin-root.sh \
+        "$pkgdir/usr/lib/touchbar/service-admin-root"
+    install -Dm0755 scripts/activate-installed-services.sh \
+        "$pkgdir/usr/bin/touchbar-activate"
+    install -Dm0755 scripts/rollback-to-tiny-dfr.sh \
+        "$pkgdir/usr/bin/touchbar-rollback"
+
+    install -Dm0644 assets/touchbar.png "$pkgdir/usr/share/touchbar/icon.png"
+    install -Dm0644 packaging/systemd/touchbar.service \
+        "$pkgdir/usr/lib/systemd/system/touchbar.service"
+    install -Dm0644 packaging/systemd/user/touchbar-session.service \
+        "$pkgdir/usr/lib/systemd/user/touchbar-session.service"
+    install -Dm0644 packaging/udev/99-touchbar.rules \
+        "$pkgdir/usr/lib/udev/rules.d/99-touchbar.rules"
+
+    install -Dm0644 config/profiles.toml.example \
+        "$pkgdir/usr/share/touchbar/profiles.toml.example"
+    install -Dm0644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+    install -Dm0644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+    install -Dm0644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
