@@ -34,9 +34,8 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            libwayland-dev libegl-dev libgles-dev libdrm-dev \
-            libudev-dev libinput-dev libsystemd-dev pkg-config
+          grep -v '^#' .github/apt-packages.txt | grep -v '^$' \
+            | xargs sudo apt-get install --no-install-recommends -y
       - name: Build catalog validator
         run: cargo build --locked --release -p touchbar-cli -p touchbar-plugin-host
       - name: Enforce permanent alias identity

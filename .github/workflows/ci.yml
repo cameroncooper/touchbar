@@ -7,7 +7,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 jobs:
   check:
@@ -20,9 +19,8 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            libwayland-dev libegl-dev libgles-dev libdrm-dev \
-            libudev-dev libinput-dev libsystemd-dev pkg-config
+          grep -v '^#' .github/apt-packages.txt | grep -v '^$' \
+            | xargs sudo apt-get install --no-install-recommends -y
       - name: Install toolchain components
         run: rustup component add rustfmt clippy
       - uses: actions/cache@v4
@@ -38,13 +36,18 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # The supervisor's confinement tests need a delegated cgroup and a
+      # session bus, which a graphical login has and a hosted runner does not.
+      # ci-session.sh supplies both; see its header.
       - name: Tests
-        run: cargo test --workspace
+        run: ./scripts/ci-session.sh cargo test --workspace
       # These longer deterministic campaigns exercise the production filesystem
       # backends and async lifecycle. They are ignored by default so the
       # ordinary suite stays fast; the release gate must not skip them.
       - name: Security campaigns
-        run: cargo test -p touchbar-plugin-supervisor security_campaign_ -- --ignored --test-threads=1
+        run: |
+          ./scripts/ci-session.sh cargo test -p touchbar-plugin-supervisor \
+            security_campaign_ -- --ignored --test-threads=1
       # Fuzz targets live outside the workspace and have their own lockfile, so
       # a signature change there is invisible to the workspace build.
       - name: Fuzz targets compile
@@ -78,9 +81,8 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            libwayland-dev libegl-dev libgles-dev libdrm-dev \
-            libudev-dev libinput-dev libsystemd-dev pkg-config
+          grep -v '^#' .github/apt-packages.txt | grep -v '^$' \
+            | xargs sudo apt-get install --no-install-recommends -y
       - name: Install the component toolchain
         run: rustup target add wasm32-wasip2
       - uses: actions/cache@v4
@@ -92,7 +94,7 @@ jobs:
             target
           key: cargo-sandbox-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-sandbox-
-      # Build outside the scope below so the delegated cgroup only has to hold
+      # Build outside the session below so the delegated scope only has to hold
       # the test itself, not a full dependency compile.
       - name: Build
         run: |
@@ -100,18 +102,10 @@ jobs:
             -p touchbar-plugin-supervisor
       # Runs a real sandboxed component end to end: supervisor, broker,
       # confinement, and the component host. No GPU or Touch Bar required.
-      #
-      # The supervisor requires its own cgroup to be a private, user-owned
-      # directory, which is what a graphical user session provides. A hosted
-      # runner's job cgroup is root-owned, so the test runs inside a transient
-      # delegated scope that reproduces that ownership.
       - name: Supervised component host
-        run: |
-          sudo systemd-run --quiet --scope --same-dir \
-            --uid="$(id -u)" --gid="$(id -g)" --property=Delegate=yes \
-            ./scripts/test-supervised-component-host.sh
+        run: ./scripts/ci-session.sh ./scripts/test-supervised-component-host.sh
       - name: Permission CLI
-        run: ./scripts/test-permission-cli.sh
+        run: ./scripts/ci-session.sh ./scripts/test-permission-cli.sh
 
   packaging:
     name: Units, udev rules, and installer
@@ -123,9 +117,8 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            libwayland-dev libegl-dev libgles-dev libdrm-dev \
-            libudev-dev libinput-dev libsystemd-dev pkg-config systemd
+          grep -v '^#' .github/apt-packages.txt | grep -v '^$' \
+            | xargs sudo apt-get install --no-install-recommends -y
       - name: Install the component toolchain
         run: rustup target add wasm32-wasip2
       - uses: actions/cache@v4
@@ -141,4 +134,32 @@ jobs:
       # checks every installed executable against its build artifact. It never
       # writes to /usr or changes service state.
       - name: Packaging
-        run: ./scripts/test-packaging.sh
+        run: ./scripts/ci-session.sh ./scripts/test-packaging.sh
+
+  documentation:
+    name: Documentation images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          grep -v '^#' .github/apt-packages.txt | grep -v '^$' \
+            | xargs sudo apt-get install --no-install-recommends -y
+      - name: Install the component toolchain
+        run: rustup target add wasm32-wasip2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-docs-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-docs-
+      # Replay is deterministic, so a changed rendering shows up here as a
+      # documentation diff rather than going unnoticed.
+      - name: Documentation images are current
+        run: ./scripts/generate-doc-images.sh --check

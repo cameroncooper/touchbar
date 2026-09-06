@@ -1,0 +1,18 @@
+# System packages every CI job needs.
+#
+# The workspace links libwayland, EGL/GLES, libdrm, libudev, libinput, and
+# libsystemd (logind session arbitration). ripgrep is an undeclared but hard
+# dependency of the acceptance scripts, dbus provides the session bus the
+# capability backends expect, and systemd provides systemd-analyze for unit
+# validation.
+libwayland-dev
+libegl-dev
+libgles-dev
+libdrm-dev
+libudev-dev
+libinput-dev
+libsystemd-dev
+pkg-config
+ripgrep
+dbus
+systemd
