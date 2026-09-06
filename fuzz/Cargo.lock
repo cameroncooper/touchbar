@@ -362,12 +362,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "touchbar-layout"
+version = "0.1.0"
+
+[[package]]
 name = "touchbar-package"
 version = "0.1.0"
 dependencies = [
  "semver",
  "serde",
  "toml",
+ "touchbar-layout",
 ]
 
 [[package]]
@@ -387,6 +392,7 @@ name = "touchbar-protocol"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "touchbar-layout",
  "wayland-backend",
  "wayland-client",
  "wayland-scanner",

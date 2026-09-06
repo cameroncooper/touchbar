@@ -26,6 +26,7 @@ const MAX_PROFILES: usize = 64;
 const MAX_CONTRIBUTIONS: usize = 256;
 const MAX_RULES: usize = 256;
 const MAX_REGIONS: usize = 64;
+use touchbar_layout::MAX_CANVAS_WIDTH;
 const MAX_ELEMENTS: usize = 512;
 const MAX_ITEMS: usize = 256;
 const MAX_PREDICATE_DEPTH: usize = 8;
@@ -157,10 +158,29 @@ pub struct ProfileRuleConfig {
     pub when: PredicateConfig,
 }
 
+/// Edge a presentation region is measured from.
+///
+/// Regions are declared before a panel is known, so they are stored relative
+/// to an edge and resolved against the live canvas width.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RegionAnchor {
+    /// `x` is the offset from the left edge.
+    #[default]
+    Leading,
+    /// The region is centered; `x` must be zero.
+    Center,
+    /// `x` is the offset from the right edge.
+    Trailing,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegionConfig {
     pub id: String,
+    #[serde(default)]
+    pub anchor: RegionAnchor,
+    #[serde(default)]
     pub x: u32,
     pub width: u32,
 }
@@ -283,9 +303,15 @@ impl ProfileDocument {
                 || region
                     .x
                     .checked_add(region.width)
-                    .is_none_or(|end| end > 2008)
+                    .is_none_or(|end| end > MAX_CANVAS_WIDTH)
             {
                 bail!("region `{}` exceeds the Touch Bar bounds", region.id);
+            }
+            if region.anchor == RegionAnchor::Center && region.x != 0 {
+                bail!(
+                    "region `{}` is centered, so its offset must be zero",
+                    region.id
+                );
             }
         }
 
@@ -395,11 +421,27 @@ impl ProfileDocument {
             .collect()
     }
 
-    pub fn region(&self, id: &str) -> Option<(u32, u32)> {
+    /// Resolve a named presentation region against the live canvas.
+    ///
+    /// The width is clamped to the canvas and the offset is measured from the
+    /// declared edge, so one profile describes the same intent on panels of
+    /// different widths. A region wider than the canvas collapses to it rather
+    /// than resolving off-strip; the caller still rejects an overlay that does
+    /// not fit.
+    pub fn region(&self, id: &str, canvas_width: u32) -> Option<(u32, u32)> {
         self.regions
             .iter()
             .find(|region| region.id == id)
-            .map(|region| (region.x, region.width))
+            .map(|region| {
+                let width = region.width.min(canvas_width);
+                let free = canvas_width - width;
+                let x = match region.anchor {
+                    RegionAnchor::Leading => region.x.min(free),
+                    RegionAnchor::Center => free / 2,
+                    RegionAnchor::Trailing => free.saturating_sub(region.x),
+                };
+                (x, width)
+            })
     }
 
     pub fn build(
@@ -706,11 +748,11 @@ fn validate_profile_element(
             element_count,
             1,
         ),
-        ProfileElementConfig::FixedSpace { width } if *width > 2008 => {
+        ProfileElementConfig::FixedSpace { width } if *width > MAX_CANVAS_WIDTH => {
             bail!("fixed space exceeds the Touch Bar width")
         }
         ProfileElementConfig::FlexibleSpace { minimum, weight }
-            if *minimum > 2008 || *weight == 0 =>
+            if *minimum > MAX_CANVAS_WIDTH || *weight == 0 =>
         {
             bail!("flexible space has invalid minimum or zero weight")
         }
@@ -739,7 +781,7 @@ fn validate_group_config(
     if depth > MAX_GROUP_DEPTH {
         bail!("profile `{profile}` group `{id}` exceeds the maximum nesting depth");
     }
-    if spacing > 2008 {
+    if spacing > MAX_CANVAS_WIDTH {
         bail!("profile `{profile}` group `{id}` spacing exceeds the Touch Bar width");
     }
     if elements.is_empty() {
@@ -1049,24 +1091,61 @@ when = { kind = "present", key = "workspace.id" }
         assert!(ProfileDocument::from_toml(&duplicate).is_err());
     }
 
+    fn document_with_region(region: &str) -> String {
+        VALID.replace(
+            "fallback = \"default\"",
+            &format!("fallback = \"default\"\n\n[[region]]\n{region}"),
+        )
+    }
+
     #[test]
     fn presentation_regions_are_named_unique_and_canvas_bounded() {
-        let with_region = VALID.replace(
-            "fallback = \"default\"",
-            "fallback = \"default\"\n\n[[region]]\nid = \"palette\"\nx = 504\nwidth = 1000",
-        );
+        let with_region = document_with_region("id = \"palette\"\nx = 504\nwidth = 1000");
         let document = ProfileDocument::from_toml(&with_region).unwrap();
-        assert_eq!(document.region("palette"), Some((504, 1000)));
-        assert_eq!(document.region("missing"), None);
+        assert_eq!(document.region("palette", 2008), Some((504, 1000)));
+        assert_eq!(document.region("missing", 2008), None);
 
         for invalid in [
             with_region.replace("width = 1000", "width = 0"),
-            with_region.replace("x = 504", "x = 1500"),
+            with_region.replace("x = 504", &format!("x = {MAX_CANVAS_WIDTH}")),
             with_region.replace("id = \"palette\"", "id = \"../palette\""),
             format!("{with_region}\n[[region]]\nid = \"palette\"\nx = 0\nwidth = 1\n"),
+            document_with_region("id = \"palette\"\nanchor = \"center\"\nx = 8\nwidth = 100"),
         ] {
             assert!(ProfileDocument::from_toml(&invalid).is_err());
         }
+    }
+
+    #[test]
+    fn regions_resolve_relative_to_the_live_canvas() {
+        let leading = ProfileDocument::from_toml(&document_with_region(
+            "id = \"r\"\nanchor = \"leading\"\nx = 40\nwidth = 200",
+        ))
+        .unwrap();
+        let centered = ProfileDocument::from_toml(&document_with_region(
+            "id = \"r\"\nanchor = \"center\"\nwidth = 200",
+        ))
+        .unwrap();
+        let trailing = ProfileDocument::from_toml(&document_with_region(
+            "id = \"r\"\nanchor = \"trailing\"\nx = 40\nwidth = 200",
+        ))
+        .unwrap();
+
+        // The same declaration follows each panel rather than a fixed 2008.
+        for canvas in [2008, 2170, 1000] {
+            assert_eq!(leading.region("r", canvas), Some((40, 200)));
+            assert_eq!(
+                centered.region("r", canvas),
+                Some(((canvas - 200) / 2, 200))
+            );
+            assert_eq!(trailing.region("r", canvas), Some((canvas - 240, 200)));
+        }
+
+        // A region larger than the panel collapses onto it instead of
+        // resolving off-strip; the compositor still rejects an overlay that
+        // cannot fit.
+        assert_eq!(leading.region("r", 120), Some((0, 120)));
+        assert_eq!(trailing.region("r", 120), Some((0, 120)));
     }
 
     #[test]

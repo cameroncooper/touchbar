@@ -1,6 +1,7 @@
 # Visual composition contract
 
-The Touch Bar scene has a fixed logical size of 2008 by 60 pixels. The ADP
+The Touch Bar scene is 60 logical pixels tall and as wide as the attached
+panel; the Apple silicon strip is 2008. The ADP
 presenter alone handles the panel's rotated physical orientation. This keeps
 plugin coordinates, layout, input, and headless tests independent of scanout.
 

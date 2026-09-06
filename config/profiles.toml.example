@@ -1,11 +1,22 @@
+# Example user profile document.
+#
+# The `plugin` values below are package sources, not download locations. They
+# match the manifests of the worked examples in this repository's `plugins/`
+# directory; build one with `touchbarctl plugin pack` and install it with
+# `touchbarctl plugin add --path`. Every item is `required = false`, so this
+# document stays valid with none of them installed.
 version = 1
 fallback = "default"
 
 # Named overlay destinations are independent of slot composition. Only one
 # presentation session is active at a time, so regions may overlap if desired.
+#
+# Regions are anchored rather than absolute, because the canvas follows the
+# attached panel. `anchor` is `leading`, `center`, or `trailing`; `x` is the
+# offset from that edge and must be zero when centered.
 [[region]]
 id = "center"
-x = 504
+anchor = "center"
 width = 1000
 
 # Plugin and item are separate so two packages may safely use the same local

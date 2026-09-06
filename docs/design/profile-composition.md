@@ -158,7 +158,7 @@ required item is absent, that configured composition becomes unready and the
 trusted system row is shown; reconnecting the item reconstructs the profile.
 An optional principal item simply stops being principal while absent.
 Region IDs use the same strict identifier grammar as profiles and slots. Their
-nonzero rectangle must remain inside the 2008-pixel logical Touch Bar canvas.
+nonzero rectangle must remain inside the live logical Touch Bar canvas.
 Group and slot IDs are unique within a profile. Grouped slots accept item/group
 content rather than fixed or flexible spaces because the group itself owns
 their inter-child geometry.

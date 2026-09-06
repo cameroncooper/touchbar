@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+touchbar-layout = { path = "../touchbar-layout" }
 anyhow.workspace = true
 glow.workspace = true
 touchbar-client = { path = "../touchbar-client" }

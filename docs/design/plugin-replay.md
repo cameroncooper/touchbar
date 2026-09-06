@@ -47,8 +47,9 @@ semantic snapshots remain JSON-only.
 }
 ```
 
-The top-level width is `1..2008`; height is always 60. A scenario has at most
-1024 steps and a 24-hour monotonic timeline. Coordinates are finite and bounded.
+The top-level width runs from 1 to the maximum canvas width; height is always
+60. A scenario has at most 1024 steps and a 24-hour monotonic timeline.
+Coordinates are finite and bounded.
 Unknown fields, enum values, versions, non-monotonic time, duplicate snapshot
 names, malformed colors, and oversized files fail closed.
 

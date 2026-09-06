@@ -5987,8 +5987,9 @@ fn to_presentation_event(event: PresentationFixtureEvent) -> Result<ComponentPre
     Ok(match event {
         PresentationFixtureEvent::Anchor { x, width } => {
             validate_coordinate(x, "presentation anchor x")?;
-            if !width.is_finite() || width <= 0.0 || width > 2008.0 {
-                bail!("presentation anchor width must be finite and between 0 and 2008");
+            let maximum = touchbar_package::MAX_TOUCHBAR_WIDTH as f32;
+            if !width.is_finite() || width <= 0.0 || width > maximum {
+                bail!("presentation anchor width must be finite and between 0 and {maximum}");
             }
             ComponentPresentationEvent::Anchor { x, width }
         }

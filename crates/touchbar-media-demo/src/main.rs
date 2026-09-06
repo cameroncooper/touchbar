@@ -9,6 +9,7 @@ use touchbar_client::{
     SessionPresentationLifecycle as ClientLifecycle, SessionPresentationPolicy as ClientPolicy,
     Sizing, SurfaceConfig, TouchContact, run,
 };
+use touchbar_layout::MAX_CANVAS_WIDTH;
 use touchbar_ui::{
     Color, ColorRole, Contact, ContactPhase, ContinuousValue, CrossAxisAlignment, DismissReason,
     DismissalPolicy, Easing, Flex, FlexItem, Icon, Image, ImageFit, ImageTint, InteractionMap,
@@ -866,8 +867,8 @@ fn main() -> Result<()> {
     if max_frames == 0 {
         bail!("--frames must be greater than zero");
     }
-    if fixed_width.is_some_and(|width| width == 0 || width > 2008) {
-        bail!("--width must be between 1 and 2008");
+    if fixed_width.is_some_and(|width| width == 0 || width > MAX_CANVAS_WIDTH) {
+        bail!("--width must be between 1 and {MAX_CANVAS_WIDTH}");
     }
     let sizing = fixed_width.map_or(Sizing::new(80, 160, 420), |width| {
         Sizing::new(width, width, width)

@@ -1,7 +1,7 @@
 # Onscreen compositor simulator
 
 The developer preview is an output of `touchbar-sessiond`, not a second UI
-implementation. It therefore displays the same final 2008×60 scene used by the
+implementation. It therefore displays the same final scene used by the
 physical Touch Bar: installed package contributions, responsive profile layout,
 backdrops, semantic theme changes, alpha composition, animations, and every
 anchored, in-place, slot, region, or full-bar presentation all pass through the

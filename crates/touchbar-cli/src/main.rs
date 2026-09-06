@@ -17,7 +17,7 @@ use serde_json::json;
 use touchbar_catalog::{Catalog, CatalogEntry, CatalogState, CatalogTier};
 use touchbar_package::{
     GithubSource, MAX_TOUCHBAR_WIDTH, PluginManifest, PresentationBar, PresentationBarElement,
-    PresentationGroupElement, RuntimeSpec,
+    PresentationGroupElement, REFERENCE_TOUCHBAR_WIDTH, RuntimeSpec,
 };
 use touchbar_plugin_store::{
     InstalledOrigin, InstalledRuntime, PluginStore, ReleaseInstall, StorePaths, inspect_package,
@@ -418,7 +418,7 @@ fn component_test_matrix(manifest: &PluginManifest) -> BTreeMap<&str, BTreeSet<u
         .map(|item| {
             (
                 item.id.as_str(),
-                BTreeSet::from([80_u32, 160, 320, 1004, MAX_TOUCHBAR_WIDTH]),
+                BTreeSet::from([80_u32, 160, 320, 1004, REFERENCE_TOUCHBAR_WIDTH]),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -2274,8 +2274,9 @@ const REPLAY_SCENARIO: &str = r##"{
 const AGENT_GUIDE: &str = r#"# TouchBar plugin agent guide
 
 This repository is one sandboxed TouchBar component pack. Keep every
-item ID stable after release and render correctly at every assigned width from
-1 through 2008 pixels at the fixed 60-pixel height.
+item ID stable after release and render correctly at every assigned width at
+the fixed 60-pixel height. The canvas follows the attached panel, so never
+assume a particular total strip width.
 
 Use semantic appearance roles from `RenderRequest`; never assume a fixed
 background or pair a hard-coded foreground with a theme-controlled surface.

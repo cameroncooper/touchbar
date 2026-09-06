@@ -1965,10 +1965,11 @@ impl State {
                 }
             }
             PresentationKind::Region => {
+                let canvas_width = self.gpu.canvas_width();
                 let (x, width) = self
                     .live_profiles
                     .as_ref()
-                    .and_then(|profiles| profiles.region(&presentation.target))
+                    .and_then(|profiles| profiles.region(&presentation.target, canvas_width))
                     .with_context(|| {
                         format!("unknown presentation region `{}`", presentation.target)
                     })?;

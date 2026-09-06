@@ -12,7 +12,7 @@ pub const DEFAULT_SOCKET_NAME: &str = "touchbar-0";
 /// scene to match, so a Touch Bar wider or narrower than the Apple silicon
 /// panel composes at its own size rather than being letterboxed. Read the
 /// live value from the compositor rather than assuming this constant.
-pub const DEFAULT_REGION_WIDTH: u32 = 2008;
+pub const DEFAULT_REGION_WIDTH: u32 = touchbar_layout::REFERENCE_CANVAS_WIDTH;
 
 /// Logical canvas height. Fixed across every supported panel.
 pub const TOUCHBAR_HEIGHT: u32 = 60;

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 libc.workspace = true
+touchbar-layout = { path = "../touchbar-layout" }
 wayland-backend.workspace = true
 wayland-client.workspace = true
 wayland-scanner.workspace = true

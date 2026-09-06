@@ -2,7 +2,7 @@
 
 TouchBar packs are immutable local packages. A pack may contribute multiple stable items. The default runtime is a WebAssembly component; it has no ambient operating-system access and reaches the desktop only through explicitly requested, user-approved broker capabilities.
 
-Use theme roles from the UI protocol rather than fixed foreground/background colors. The daemon sends a fresh theme snapshot whenever the active palette changes. Layouts must render at any width from 1–2008 pixels; use responsive variants and keep item IDs stable across releases. The component host supplies the manifest's canonical `github:owner/repository` source as the runtime plugin identity. A native runtime must pass that exact manifest source to `ClientOptions::new`; profiles identify a surface with the collision-free pair `{ plugin = "github:owner/repository", item = "local-item-id" }`.
+Use theme roles from the UI protocol rather than fixed foreground/background colors. The daemon sends a fresh theme snapshot whenever the active palette changes. Layouts must render at any assigned width; use responsive variants and keep item IDs stable across releases. The canvas follows the attached panel, so never assume a particular total strip width. The component host supplies the manifest's canonical `github:owner/repository` source as the runtime plugin identity. A native runtime must pass that exact manifest source to `ClientOptions::new`; profiles identify a surface with the collision-free pair `{ plugin = "github:owner/repository", item = "local-item-id" }`.
 
 Use the bounded `Canvas2d` SDK node for custom graphs, indicators, drawings,
 and other portable GPU content. Give it a local view box and let the host scale

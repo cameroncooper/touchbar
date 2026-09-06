@@ -26,7 +26,11 @@ pub const SUPPORTED_MANIFEST_VERSION: u32 = 1;
 pub const SUPPORTED_HOST_API_VERSION: &str = "1.0.0";
 pub const SUPPORTED_COMPONENT_WORLD: &str = "touchbar:plugin/plugin@1.0.0";
 pub const MAX_ASSETS: usize = 64;
-pub const MAX_TOUCHBAR_WIDTH: u32 = 2008;
+/// Largest width a manifest may declare, shared with the profile and replay
+/// parsers so a wider panel never needs a manifest contract change.
+pub const MAX_TOUCHBAR_WIDTH: u32 = touchbar_layout::MAX_CANVAS_WIDTH;
+/// Representative full-strip width for render tests. Not a bound.
+pub const REFERENCE_TOUCHBAR_WIDTH: u32 = touchbar_layout::REFERENCE_CANVAS_WIDTH;
 pub const MAX_ASSET_WIDTH: u32 = MAX_TOUCHBAR_WIDTH;
 pub const MAX_ASSET_HEIGHT: u32 = 240;
 pub const MAX_ASSET_PIXELS: u64 = 2 * 1024 * 1024;

@@ -10,6 +10,20 @@ pub const VISIBILITY_PRIORITY_LOW: i32 = -1000;
 pub const VISIBILITY_PRIORITY_NORMAL: i32 = 0;
 pub const VISIBILITY_PRIORITY_HIGH: i32 = 1000;
 pub const MAX_GROUP_DEPTH: usize = 8;
+/// Largest logical canvas any supported Touch Bar may present.
+///
+/// The canvas follows the attached panel, so manifests, profiles, and replay
+/// scenarios are all bounded by this ceiling at parse time and then resolved
+/// against the live width. It is a sanity limit, not the size of any real
+/// panel: the Apple silicon strip is 2008 logical pixels.
+pub const MAX_CANVAS_WIDTH: u32 = 8192;
+/// Logical width of the Apple silicon Touch Bar.
+///
+/// The canvas follows the attached panel, so this is not a bound. It is the
+/// reference full-strip width: what headless paths compose at when no panel
+/// is attached, and the widest representative width `touchbarctl plugin test`
+/// renders each item at.
+pub const REFERENCE_CANVAS_WIDTH: u32 = 2008;
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ItemId(String);

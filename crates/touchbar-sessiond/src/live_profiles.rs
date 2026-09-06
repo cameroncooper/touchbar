@@ -143,8 +143,8 @@ impl LiveProfiles {
             .map(|snapshot| snapshot.composition.profile.as_str())
     }
 
-    pub fn region(&self, id: &str) -> Option<(u32, u32)> {
-        self.document.region(id)
+    pub fn region(&self, id: &str, canvas_width: u32) -> Option<(u32, u32)> {
+        self.document.region(id, canvas_width)
     }
 
     pub fn missing_required_items(&self) -> Vec<String> {

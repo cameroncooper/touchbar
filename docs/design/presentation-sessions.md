@@ -120,7 +120,7 @@ The protocol and both Rust APIs name five implemented policies:
 | In-place | Replace the source with all declared bar elements and reflow neighbors | Per-element presentation sizing and ordinary compression rules |
 | Slot | Replace every element in a named slot and remove presented surfaces from former slots | Per-element presentation sizing and ordinary compression rules |
 | Region | Overlay at a named compositor-owned rectangle | Exact configured region width |
-| Full bar | Explicitly replace the complete active bar | Exact 2008-pixel logical width |
+| Full bar | Explicitly replace the complete active bar | Exact logical canvas width |
 
 An item opts into presentation by publishing nonzero expanded sizing metadata.
 Region and full-bar requests still require that opt-in, but their daemon-owned
