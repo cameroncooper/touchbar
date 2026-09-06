@@ -1,0 +1,26 @@
+manifest_version = 1
+
+[plugin]
+name = "Secret Component Demo"
+version = "0.1.0"
+description = "Sandboxed activation-gated logical secret example"
+license = "MIT OR Apache-2.0"
+source = "github:cameroncooper/touchbar-secret-component-demo"
+api = "^1.0"
+
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+
+[[items]]
+id = "secret-demo"
+label = "Secret demo"
+
+[[permission]]
+capability = "secret.read.v1"
+required = false
+reason = "Read the user-mapped demo credential after an explicit tap"
+
+[permission.scope]
+logical_names = ["demo-token"]

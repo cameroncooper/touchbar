@@ -1,0 +1,10 @@
+[package]
+name = "touchbar-package"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+semver.workspace = true
+serde.workspace = true
+toml.workspace = true

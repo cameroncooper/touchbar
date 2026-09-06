@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "item": "secret-demo",
+  "width": 200,
+  "broker": {
+    "secret_reads": [
+      {
+        "id": "demo-credential",
+        "request": {
+          "logical_name": "demo-token"
+        },
+        "responses": [
+          {
+            "kind": "value",
+            "content_type": "application/octet-stream",
+            "body": "fixture-only-token"
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "down",
+      "x": 100,
+      "y": 30,
+      "time_ms": 0
+    },
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "up",
+      "x": 100,
+      "y": 30,
+      "time_ms": 50
+    },
+    {
+      "kind": "snapshot",
+      "name": "read"
+    }
+  ]
+}

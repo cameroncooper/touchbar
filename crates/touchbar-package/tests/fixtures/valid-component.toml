@@ -1,0 +1,81 @@
+manifest_version = 1
+
+[plugin]
+name = "Media Controls"
+version = "1.2.3"
+description = "A theme-aware MPRIS controller"
+license = "MIT"
+source = "github:alice/touchbar-media"
+api = "^1.0"
+authors = ["Alice"]
+
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+
+[[items]]
+id = "now-playing"
+label = "Now Playing"
+expanded_bar = "media-expanded"
+press_and_hold_bar = "media-actions"
+
+[[items]]
+id = "media-timeline"
+label = "Media Timeline"
+
+[[bar]]
+id = "media-expanded"
+minimum_width = 256
+preferred_width = 520
+maximum_width = 1004
+dismiss_on_selection = true
+principal_item = "media-timeline"
+
+[[bar.element]]
+kind = "group"
+id = "now-playing-group"
+layout = "natural"
+
+[[bar.element.element]]
+kind = "item"
+item = "now-playing"
+minimum_width = 128
+preferred_width = 240
+maximum_width = 480
+
+[[bar.element]]
+kind = "flexible-space"
+minimum = 8
+weight = 1
+
+[[bar.element]]
+kind = "item"
+item = "media-timeline"
+minimum_width = 120
+preferred_width = 240
+maximum_width = 480
+
+[[bar]]
+id = "media-actions"
+minimum_width = 128
+preferred_width = 320
+maximum_width = 640
+dismiss_on_selection = true
+
+[[bar.element]]
+kind = "fixed-space"
+width = 8
+
+[[bar.element]]
+kind = "item"
+item = "media-timeline"
+minimum_width = 120
+preferred_width = 240
+maximum_width = 480
+
+[[permission]]
+capability = "dbus.session"
+required = true
+reason = "Read and control MPRIS players"
+scope = { bus_names = ["org.mpris.MediaPlayer2.*"] }

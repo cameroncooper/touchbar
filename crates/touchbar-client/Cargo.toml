@@ -1,0 +1,14 @@
+[package]
+name = "touchbar-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+glow.workspace = true
+khronos-egl.workspace = true
+libc.workspace = true
+touchbar-protocol = { path = "../touchbar-protocol" }
+wayland-client.workspace = true
+wayland-egl.workspace = true

@@ -1,0 +1,105 @@
+manifest_version = 1
+
+[plugin]
+name = "Media"
+version = "1.0.0"
+description = "MPRIS playback glance, transport controls, and timeline scrubbing"
+license = "MIT OR Apache-2.0"
+source = "github:cameroncooper/touchbar-media"
+api = "^1.0"
+
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+
+[[items]]
+id = "now-playing"
+label = "Now Playing"
+expanded_bar = "media-expanded"
+[[items]]
+id = "transport"
+label = "Media Transport"
+[[items]]
+id = "timeline"
+label = "Media Timeline"
+[[items]]
+id = "touchbar-logo"
+label = "TouchBar Logo"
+
+[[bar]]
+id = "media-expanded"
+minimum_width = 468
+preferred_width = 760
+maximum_width = 1004
+dismiss_on_selection = false
+principal_item = "timeline"
+
+[[bar.element]]
+kind = "item"
+item = "now-playing"
+minimum_width = 160
+preferred_width = 320
+maximum_width = 520
+
+[[bar.element]]
+kind = "item"
+item = "transport"
+minimum_width = 120
+preferred_width = 160
+maximum_width = 240
+
+[[bar.element]]
+kind = "flexible-space"
+minimum = 8
+weight = 1
+
+[[bar.element]]
+kind = "item"
+item = "timeline"
+minimum_width = 180
+preferred_width = 264
+maximum_width = 480
+
+[[asset]]
+id = "touchbar-wordmark"
+path = "assets/touchbar.svg"
+kind = "symbolic-svg"
+width = 171
+height = 40
+
+[[permission]]
+capability = "dbus.call.v1"
+required = false
+reason = "Control the selected MPRIS player through playerctld"
+[permission.scope]
+
+[[permission.scope.rules]]
+bus = "session"
+destination = "org.mpris.MediaPlayer2.playerctld"
+path = "/org/mpris/MediaPlayer2"
+interface = "org.mpris.MediaPlayer2.Player"
+member = "PlayPause"
+signature = ""
+allow_service_activation = false
+requires_user_activation = true
+
+[[permission.scope.rules]]
+bus = "session"
+destination = "org.mpris.MediaPlayer2.playerctld"
+path = "/org/mpris/MediaPlayer2"
+interface = "org.mpris.MediaPlayer2.Player"
+member = "Next"
+signature = ""
+allow_service_activation = false
+requires_user_activation = true
+
+[[permission.scope.rules]]
+bus = "session"
+destination = "org.mpris.MediaPlayer2.playerctld"
+path = "/org/mpris/MediaPlayer2"
+interface = "org.mpris.MediaPlayer2.Player"
+member = "Previous"
+signature = ""
+allow_service_activation = false
+requires_user_activation = true

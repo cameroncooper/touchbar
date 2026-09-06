@@ -1,0 +1,81 @@
+[workspace]
+members = [
+    "crates/touchbar-broker-schema",
+    "crates/touchbar-client",
+    "crates/touchbar-catalog",
+    "crates/touchbar-component-sdk",
+    "crates/touchbar-layout",
+    "crates/touchbar-model",
+    "crates/touchbar-package",
+    "crates/touchbar-plugin-host",
+    "crates/touchbar-plugin-store",
+    "crates/touchbar-plugin-supervisor",
+    "crates/touchbar-policy",
+    "crates/touchbar-profile-config",
+    "crates/touchbar-protocol",
+    "crates/touchbar-ui",
+    "crates/touchbar-system-bar",
+    "crates/touchbar-sessiond",
+    "crates/touchbar-gl-demo",
+    "crates/touchbar-ui-demo",
+    "crates/touchbar-cli",
+    "crates/touchbar-control",
+    "examples/broker-component-plugin",
+    "examples/clipboard-component-plugin",
+    "examples/desktop-action-component-plugin",
+    "examples/filesystem-component-plugin",
+    "examples/http-component-plugin",
+    "examples/secret-component-plugin",
+    "plugins/controls",
+    "plugins/media",
+    "plugins/hyprland",
+    "plugins/capture",
+    "plugins/command-deck",
+    "crates/touchbar-media-demo",
+    "crates/touchbard",
+]
+exclude = ["examples/component-plugin", "fuzz"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1.0"
+attestation-verify = "0.1.0"
+cosmic-text = "0.19"
+drm = "0.14"
+enumflags2 = "0.7"
+glow = "0.16"
+khronos-egl = { version = "6.0", features = ["dynamic"] }
+libc = "0.2"
+input-linux = "0.7"
+input-linux-sys = "0.9"
+input = "0.9"
+memmap2 = "0.9"
+naga = { version = "30.0.1", features = ["wgsl-in", "glsl-out"] }
+png = "0.18"
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls"] }
+resvg = { version = "0.48.1", default-features = false }
+semver = { version = "1.0", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+snap = "1.1"
+tempfile = "3.23"
+taffy = { version = "0.14.0", default-features = false, features = ["std", "taffy_tree", "flexbox"] }
+toml = "0.9"
+url = "2.5"
+wasmtime = { version = "48.0.1", default-features = false, features = ["anyhow", "component-model", "cranelift", "runtime", "std"] }
+wasmtime-wasi = { version = "48.0.1", default-features = false, features = ["p2"] }
+wit-bindgen = "0.61.1"
+zbus = "5.19.0"
+zeroize = "1.9"
+wayland-client = { version = "0.31", features = ["system"] }
+wayland-backend = "0.3"
+wayland-egl = "0.32"
+wayland-protocols = { version = "0.32", features = ["client", "server", "staging"] }
+wayland-scanner = "0.31"
+wayland-server = "0.31"

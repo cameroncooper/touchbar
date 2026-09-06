@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "item": "launchers",
+  "width": 240,
+  "broker": {
+    "command_runs": [
+      {
+        "id": "command-probe",
+        "request": {
+          "command_id": "probe",
+          "values": []
+        },
+        "responses": [
+          {
+            "kind": "completed",
+            "output": [
+              {
+                "kind": "stdout",
+                "body": "touchbar command probe\n"
+              }
+            ],
+            "exit_code": 0,
+            "signal": null
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "down",
+      "x": 200,
+      "y": 30,
+      "time_ms": 0
+    },
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "up",
+      "x": 200,
+      "y": 30,
+      "time_ms": 40
+    },
+    {
+      "kind": "advance",
+      "time_ms": 50
+    },
+    {
+      "kind": "snapshot",
+      "name": "completed"
+    }
+  ]
+}

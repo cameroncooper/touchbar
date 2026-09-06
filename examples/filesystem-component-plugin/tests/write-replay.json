@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "item": "filesystem-write-demo",
+  "width": 240,
+  "broker": {
+    "filesystem_writes": [
+      {
+        "id": "create-demo",
+        "operation": "create-file",
+        "request": {
+          "mount": "workspace",
+          "path": "touchbar-replay.txt",
+          "body": "TouchBar replay\n"
+        },
+        "responses": [
+          {
+            "kind": "mutation",
+            "bytes_written": 16,
+            "resulting_size": 16
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "down",
+      "x": 120,
+      "y": 30,
+      "time_ms": 0
+    },
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "up",
+      "x": 120,
+      "y": 30,
+      "time_ms": 50
+    },
+    {
+      "kind": "snapshot",
+      "name": "saved"
+    }
+  ]
+}

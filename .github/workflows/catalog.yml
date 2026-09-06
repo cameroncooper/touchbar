@@ -1,0 +1,51 @@
+name: TouchBar catalog
+
+on:
+  pull_request:
+    paths:
+      - catalog/plugins.toml
+      - crates/touchbar-catalog/**
+      - crates/touchbar-cli/**
+      - crates/touchbar-package/**
+      - crates/touchbar-plugin-store/**
+      - .github/workflows/catalog.yml
+  push:
+    branches: [main]
+    paths:
+      - catalog/plugins.toml
+      - crates/touchbar-catalog/**
+      - crates/touchbar-cli/**
+      - crates/touchbar-package/**
+      - crates/touchbar-plugin-store/**
+      - .github/workflows/catalog.yml
+
+permissions:
+  contents: read
+  attestations: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Build catalog validator
+        run: cargo build --locked --release -p touchbar-cli -p touchbar-plugin-host
+      - name: Enforce permanent alias identity
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if git cat-file -e "$BASE_SHA:catalog/plugins.toml"; then
+            git show "$BASE_SHA:catalog/plugins.toml" > "$RUNNER_TEMP/catalog-previous.toml"
+          else
+            printf 'catalog_version = 1\nplugin = []\n' > "$RUNNER_TEMP/catalog-previous.toml"
+          fi
+          target/release/touchbarctl plugin catalog-check --catalog catalog/plugins.toml --previous "$RUNNER_TEMP/catalog-previous.toml"
+      - name: Validate catalog and published packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: target/release/touchbarctl plugin catalog-check --catalog catalog/plugins.toml --online --host target/release/touchbar-plugin-host

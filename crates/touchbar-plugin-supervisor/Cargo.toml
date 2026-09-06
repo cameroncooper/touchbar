@@ -1,0 +1,28 @@
+[package]
+name = "touchbar-plugin-supervisor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+enumflags2.workspace = true
+libc.workspace = true
+reqwest.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+touchbar-package = { path = "../touchbar-package" }
+touchbar-broker-schema = { path = "../touchbar-broker-schema" }
+touchbar-policy = { path = "../touchbar-policy" }
+touchbar-protocol = { path = "../touchbar-protocol" }
+url.workspace = true
+wayland-client.workspace = true
+wayland-protocols.workspace = true
+zbus.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wayland-server.workspace = true

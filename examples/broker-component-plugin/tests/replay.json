@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "item": "media-broker",
+  "width": 320,
+  "broker": {
+    "dbus_calls": [
+      {
+        "id": "playback-status",
+        "request": {
+          "bus": "session",
+          "destination": "org.mpris.MediaPlayer2.playerctld",
+          "path": "/org/mpris/MediaPlayer2",
+          "interface": "org.freedesktop.DBus.Properties",
+          "member": "Get",
+          "arguments": [
+            "org.mpris.MediaPlayer2.Player",
+            "PlaybackStatus"
+          ],
+          "reply": "variant-string"
+        },
+        "responses": [
+          {
+            "kind": "string",
+            "value": "Playing"
+          }
+        ]
+      },
+      {
+        "id": "play-pause",
+        "request": {
+          "bus": "session",
+          "destination": "org.mpris.MediaPlayer2.playerctld",
+          "path": "/org/mpris/MediaPlayer2",
+          "interface": "org.mpris.MediaPlayer2.Player",
+          "member": "PlayPause",
+          "arguments": [],
+          "reply": "unit"
+        },
+        "responses": [
+          {
+            "kind": "unit"
+          }
+        ]
+      }
+    ],
+    "dbus_subscriptions": [
+      {
+        "id": "playback-events",
+        "request": {
+          "bus": "session",
+          "sender": "org.mpris.MediaPlayer2.playerctld",
+          "path": "/org/mpris/MediaPlayer2",
+          "interface": "org.freedesktop.DBus.Properties",
+          "member": "PropertiesChanged",
+          "signature": "sa{sv}as",
+          "argument_zero": "org.mpris.MediaPlayer2.Player"
+        }
+      }
+    ]
+  },
+  "steps": [
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "down",
+      "x": 80,
+      "y": 30,
+      "time_ms": 0
+    },
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "up",
+      "x": 80,
+      "y": 30,
+      "time_ms": 50
+    },
+    {
+      "kind": "snapshot",
+      "name": "playing"
+    },
+    {
+      "kind": "dbus-signal",
+      "subscription": "playback-events",
+      "event": {
+        "interface_name": "org.mpris.MediaPlayer2.Player",
+        "changed_properties": [
+          {
+            "name": "PlaybackStatus",
+            "value": {
+              "kind": "string",
+              "value": "Paused"
+            }
+          }
+        ],
+        "invalidated_properties": []
+      }
+    },
+    {
+      "kind": "snapshot",
+      "name": "paused"
+    },
+    {
+      "kind": "touch",
+      "contact_id": 2,
+      "phase": "down",
+      "x": 240,
+      "y": 30,
+      "time_ms": 100
+    },
+    {
+      "kind": "touch",
+      "contact_id": 2,
+      "phase": "up",
+      "x": 240,
+      "y": 30,
+      "time_ms": 150
+    },
+    {
+      "kind": "snapshot",
+      "name": "toggled"
+    }
+  ]
+}

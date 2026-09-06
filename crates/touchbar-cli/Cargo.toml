@@ -1,0 +1,28 @@
+[package]
+name = "touchbar-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "touchbarctl"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+attestation-verify.workspace = true
+libc.workspace = true
+reqwest.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+snap.workspace = true
+tempfile.workspace = true
+toml.workspace = true
+touchbar-control = { path = "../touchbar-control" }
+touchbar-catalog = { path = "../touchbar-catalog" }
+touchbar-package = { path = "../touchbar-package" }
+touchbar-plugin-store = { path = "../touchbar-plugin-store" }
+touchbar-policy = { path = "../touchbar-policy" }
+url.workspace = true

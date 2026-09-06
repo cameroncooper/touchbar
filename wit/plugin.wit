@@ -1,0 +1,555 @@
+package touchbar:plugin@1.0.0;
+
+interface ui {
+    enum color-scheme {
+        dark,
+        light,
+    }
+
+    enum motion-policy {
+        full,
+        reduced,
+        disabled,
+    }
+
+    record rgba {
+        red: f32,
+        green: f32,
+        blue: f32,
+        alpha: f32,
+    }
+
+    record theme {
+        revision: u64,
+        scheme: color-scheme,
+        motion: motion-policy,
+        background: rgba,
+        control: rgba,
+        control-pressed: rgba,
+        accent: rgba,
+        track: rgba,
+        foreground: rgba,
+        muted: rgba,
+        destructive: rgba,
+        corner-radius: f32,
+    }
+
+    record viewport {
+        width: f32,
+        height: f32,
+        scale: f32,
+    }
+
+    enum color-role {
+        background,
+        control,
+        control-pressed,
+        track,
+        foreground,
+        muted,
+        accent,
+        destructive,
+        on-accent,
+        on-destructive,
+    }
+
+    enum text-align {
+        leading,
+        center,
+        trailing,
+    }
+
+    enum icon {
+        volume,
+        muted,
+        play,
+        pause,
+        check,
+        chevron-left,
+        chevron-right,
+    }
+
+    enum image-fit {
+        contain,
+        cover,
+        stretch,
+    }
+
+    variant image-tint {
+        none,
+        multiply(color-role),
+        mask(color-role),
+    }
+
+    /// References a manifest-declared, host-verified package asset by stable
+    /// logical ID. The guest never receives its path, bytes, or descriptor.
+    record asset-image-node {
+        asset-id: string,
+        label: string,
+        opacity: f32,
+        fit: image-fit,
+        tint: image-tint,
+    }
+
+    enum cross-axis-alignment {
+        start,
+        center,
+        end,
+        stretch,
+    }
+
+    enum representation {
+        minimal,
+        compact,
+        full,
+    }
+
+    record label-node {
+        text: string,
+        size: f32,
+        color: color-role,
+        align: text-align,
+    }
+
+    record button-node {
+        widget-id: u64,
+        label: string,
+        icon: option<icon>,
+        pressed: bool,
+        selected: bool,
+    }
+
+    record icon-node {
+        icon: icon,
+        color: color-role,
+        label: string,
+    }
+
+    record panel-node {
+        radius: f32,
+        color: color-role,
+        padding: f32,
+        child: u32,
+    }
+
+    record pressable-node {
+        widget-id: u64,
+        label: string,
+        pressed: bool,
+        selected: option<bool>,
+        hold-ms: option<u32>,
+        background: option<color-role>,
+        pressed-background: option<color-role>,
+        content-foreground: option<color-role>,
+        corner-radius: option<f32>,
+        padding: f32,
+        child: u32,
+    }
+
+    record slider-node {
+        widget-id: u64,
+        label: string,
+        value: f32,
+    }
+
+    record meter-node {
+        label: string,
+        value: f32,
+        peak: option<f32>,
+    }
+
+    record progress-node {
+        label: string,
+        value: f32,
+        track: color-role,
+        fill: color-role,
+    }
+
+    record opacity-node {
+        opacity: f32,
+        child: u32,
+    }
+
+    record visual-transform {
+        translation-x: f32,
+        translation-y: f32,
+        scale: f32,
+        opacity: f32,
+    }
+
+    enum easing {
+        linear,
+        ease-in-out,
+    }
+
+    enum animation-playback {
+        once,
+        loop,
+        alternate,
+    }
+
+    /// The host owns the monotonic start time. Reusing an animation ID with
+    /// an unchanged description preserves its phase across guest rerenders;
+    /// changing the description restarts it from the newly accepted view.
+    record motion-node {
+        animation-id: u64,
+        start-transform: visual-transform,
+        end-transform: visual-transform,
+        duration-ms: u32,
+        easing: easing,
+        playback: animation-playback,
+        child: u32,
+    }
+
+    /// Canvas coordinates are resolved from this local view box into the
+    /// compositor-assigned node bounds. Semantic colors are re-resolved on
+    /// every theme revision; literal RGBA remains available for data colors.
+    variant canvas-color {
+        role(color-role),
+        rgba(rgba),
+    }
+
+    record canvas-paint {
+        color: canvas-color,
+        opacity: f32,
+    }
+
+    record canvas-point {
+        x: f32,
+        y: f32,
+    }
+
+    record canvas-rect {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        radius: f32,
+        paint: canvas-paint,
+    }
+
+    record canvas-line {
+        start: canvas-point,
+        end: canvas-point,
+        width: f32,
+        paint: canvas-paint,
+    }
+
+    record canvas-polyline {
+        points: list<canvas-point>,
+        width: f32,
+        paint: canvas-paint,
+    }
+
+    record canvas-circle {
+        center: canvas-point,
+        radius: f32,
+        paint: canvas-paint,
+    }
+
+    record canvas-text {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        text: string,
+        size: f32,
+        color: canvas-paint,
+        align: text-align,
+    }
+
+    record canvas-linear-gradient {
+        start: canvas-point,
+        end: canvas-point,
+        start-color: canvas-paint,
+        end-color: canvas-paint,
+    }
+
+    record canvas-gradient-rect {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        radius: f32,
+        gradient: canvas-linear-gradient,
+    }
+
+    record canvas-quadratic-segment {
+        control: canvas-point,
+        endpoint: canvas-point,
+    }
+
+    record canvas-cubic-segment {
+        control-one: canvas-point,
+        control-two: canvas-point,
+        endpoint: canvas-point,
+    }
+
+    variant canvas-path-segment {
+        move-to(canvas-point),
+        line-to(canvas-point),
+        quadratic-to(canvas-quadratic-segment),
+        cubic-to(canvas-cubic-segment),
+        close,
+    }
+
+    record canvas-path {
+        segments: list<canvas-path-segment>,
+        width: f32,
+        paint: canvas-paint,
+    }
+
+    /// A single, closed, simple polygon. Curves use the host's fixed
+    /// subdivision policy; self-intersections and holes are rejected.
+    record canvas-fill-path {
+        segments: list<canvas-path-segment>,
+        paint: canvas-paint,
+    }
+
+    variant canvas-command {
+        fill-rect(canvas-rect),
+        line(canvas-line),
+        polyline(canvas-polyline),
+        fill-circle(canvas-circle),
+        text(canvas-text),
+        fill-linear-gradient-rect(canvas-gradient-rect),
+        stroke-path(canvas-path),
+        fill-path(canvas-fill-path),
+    }
+
+    record canvas-node {
+        label: string,
+        viewbox-width: f32,
+        viewbox-height: f32,
+        commands: list<canvas-command>,
+    }
+
+    /// A statically bounded procedural fragment effect. `source` is a
+    /// straight-line WGSL body containing only `let` bindings and defining a
+    /// final `color: vec4<f32>`. The host supplies uv, size, time, params0,
+    /// params1, and all semantic theme colors. No raw GPU API is exposed.
+    record shader-effect-node {
+        effect-id: u64,
+        label: string,
+        source: string,
+        parameters: list<f32>,
+        opacity: f32,
+        preferred-width: f32,
+        preferred-height: f32,
+        animation-period-ms: option<u32>,
+    }
+
+    record flex {
+        minimum: f32,
+        basis: f32,
+        maximum: f32,
+        grow: f32,
+        shrink: f32,
+        visibility-priority: s32,
+        required: bool,
+        intrinsic: bool,
+    }
+
+    record flex-child {
+        node: u32,
+        layout: flex,
+    }
+
+    record container-node {
+        gap: f32,
+        padding: f32,
+        align: cross-axis-alignment,
+        children: list<flex-child>,
+    }
+
+    record responsive-variant {
+        representation: representation,
+        minimum-width: f32,
+        node: u32,
+    }
+
+    record responsive-node {
+        widget-id: u64,
+        variants: list<responsive-variant>,
+    }
+
+    variant node {
+        empty,
+        layer(list<u32>),
+        label(label-node),
+        icon(icon-node),
+        image(asset-image-node),
+        button(button-node),
+        row(container-node),
+        column(container-node),
+        panel(panel-node),
+        pressable(pressable-node),
+        slider(slider-node),
+        meter(meter-node),
+        progress(progress-node),
+        opacity(opacity-node),
+        motion(motion-node),
+        canvas(canvas-node),
+        shader-effect(shader-effect-node),
+        responsive(responsive-node),
+    }
+
+    record view {
+        root: u32,
+        nodes: list<node>,
+    }
+
+    record item {
+        id: string,
+        label: string,
+    }
+
+    record render-request {
+        item-id: string,
+        viewport: viewport,
+        theme: theme,
+    }
+
+    enum input-kind {
+        pressed,
+        activated,
+        long-pressed,
+        value-changed,
+        released,
+        cancelled,
+    }
+
+    record input-event {
+        item-id: string,
+        widget-id: u64,
+        kind: input-kind,
+        value: option<f32>,
+        contact-id: option<u32>,
+    }
+
+    enum presentation-placement {
+        anchored,
+        in-place,
+        slot,
+        region,
+        full-bar,
+    }
+
+    enum presentation-lifecycle {
+        persistent,
+        transient,
+    }
+
+    record presentation-begin {
+        placement: presentation-placement,
+        lifecycle: presentation-lifecycle,
+        target: option<string>,
+    }
+
+    enum presentation-dismissal {
+        requested,
+        selection,
+        timeout,
+    }
+
+    enum presentation-end-reason {
+        requested,
+        selection,
+        outside-press,
+        timeout,
+        source-hidden,
+        replaced,
+        rejected,
+    }
+
+    record presentation-anchor {
+        x: f32,
+        width: f32,
+    }
+
+    variant presentation-event {
+        anchor(presentation-anchor),
+        started,
+        ended(presentation-end-reason),
+    }
+
+    variant presentation-command {
+        begin(presentation-begin),
+        end(presentation-dismissal),
+    }
+
+    record update {
+        rerender: bool,
+        presentation: option<presentation-command>,
+    }
+}
+
+/// Policy-brokered access to host services. The component never receives the
+/// private supervisor socket, its authenticated identity, or raw OS handles.
+interface broker {
+    enum capability-status {
+        granted,
+        denied,
+        needs-consent,
+        unsupported,
+        disclosure-only,
+    }
+
+    record capability-state {
+        capability: string,
+        required: bool,
+        status: capability-status,
+    }
+
+    record capability-snapshot {
+        generation: u64,
+        states: list<capability-state>,
+    }
+
+    enum error-code {
+        unavailable,
+        denied,
+        out-of-scope,
+        invalid-request,
+        invalid-phase,
+        activation-required,
+        quota-exceeded,
+        rate-limited,
+        timeout,
+        cancelled,
+        unsupported,
+        backend-failed,
+        internal,
+    }
+
+    variant operation-result {
+        success(list<u8>),
+        error(error-code),
+    }
+
+    variant host-event {
+        completion(tuple<u64, operation-result>),
+        resource-event(tuple<u64, u64, operation-result>),
+        capability-changed(tuple<u64, capability-state>),
+        overflow(tuple<u64, u64>),
+        shutdown(tuple<u64, error-code>),
+    }
+
+    capabilities: func() -> capability-snapshot;
+    request: func(capability: string, operation: string, payload: list<u8>) -> result<u64, error-code>;
+    cancel: func(request-id: u64) -> result<_, error-code>;
+    close: func(resource-id: u64) -> result<_, error-code>;
+}
+
+world plugin {
+    use ui.{item, render-request, view, input-event, presentation-event, update};
+    use broker.{host-event};
+
+    import broker;
+
+    export items: func() -> list<item>;
+    export render: func(request: render-request) -> result<view, string>;
+    export handle-event: func(event: input-event) -> result<update, string>;
+    export handle-presentation-event: func(event: presentation-event) -> result<update, string>;
+    export handle-host-event: func(event: host-event) -> result<update, string>;
+}

@@ -1,0 +1,19 @@
+# Keep the Touch Bar outside the graphical seat. touchbard alone owns its DRM
+# and touch devices; touchbar-sessiond receives only normalized contacts.
+# This file deliberately sorts after tiny-dfr's 99-touchbar rules. Aliases and
+# service wants are additive so rollback retains tiny-dfr's device bindings.
+SUBSYSTEM=="drm", KERNEL=="card*", DRIVERS=="adp", TAG-="master-of-seat", ENV{ID_SEAT}="seat-touchbar", TAG+="systemd", ENV{SYSTEMD_ALIAS}+="/dev/touchbar_display"
+SUBSYSTEM=="drm", KERNEL=="card*", DRIVERS=="adp", TEST=="/etc/touchbar/enabled", ENV{SYSTEMD_WANTS}+="touchbar.service"
+SUBSYSTEM=="drm", KERNEL=="card*", DRIVERS=="appletbdrm", TAG-="master-of-seat", ENV{ID_SEAT}="seat-touchbar", TAG+="systemd", ENV{SYSTEMD_ALIAS}+="/dev/touchbar_display"
+SUBSYSTEM=="drm", KERNEL=="card*", DRIVERS=="appletbdrm", TEST=="/etc/touchbar/enabled", ENV{SYSTEMD_WANTS}+="touchbar.service"
+
+SUBSYSTEM=="input", ATTR{name}=="Apple Inc. Touch Bar Display Touchpad", ENV{ID_SEAT}="seat-touchbar", TAG+="systemd"
+SUBSYSTEM=="input", ATTR{name}=="Apple Inc. Touch Bar Display Touchpad", TEST=="/etc/touchbar/enabled", ENV{SYSTEMD_WANTS}+="touchbar.service"
+SUBSYSTEM=="input", ATTR{name}=="MacBookPro17,1 Touch Bar", ENV{ID_SEAT}="seat-touchbar", TAG+="systemd"
+SUBSYSTEM=="input", ATTR{name}=="MacBookPro17,1 Touch Bar", TEST=="/etc/touchbar/enabled", ENV{SYSTEMD_WANTS}+="touchbar.service"
+SUBSYSTEM=="input", ATTR{name}=="Mac14,7 Touch Bar", ENV{ID_SEAT}="seat-touchbar", TAG+="systemd"
+SUBSYSTEM=="input", ATTR{name}=="Mac14,7 Touch Bar", TEST=="/etc/touchbar/enabled", ENV{SYSTEMD_WANTS}+="touchbar.service"
+
+SUBSYSTEM=="backlight", KERNEL=="appletb_backlight", DRIVERS=="hid-appletb-bl", TAG+="systemd", ENV{SYSTEMD_ALIAS}+="/dev/touchbar_backlight"
+SUBSYSTEM=="backlight", KERNEL=="228200000.display-pipe.0", DRIVERS=="panel-summit", TAG+="systemd", ENV{SYSTEMD_ALIAS}+="/dev/touchbar_backlight"
+SUBSYSTEM=="backlight", KERNELS=="228600000.dsi.0", DRIVERS=="panel-summit", TAG+="systemd", ENV{SYSTEMD_ALIAS}+="/dev/touchbar_backlight"

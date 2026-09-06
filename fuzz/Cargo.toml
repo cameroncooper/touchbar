@@ -1,0 +1,38 @@
+[package]
+name = "touchbar-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libc = "0.2"
+libfuzzer-sys = "0.4"
+toml = "0.9"
+touchbar-broker-schema = { path = "../crates/touchbar-broker-schema" }
+touchbar-package = { path = "../crates/touchbar-package" }
+touchbar-policy = { path = "../crates/touchbar-policy" }
+touchbar-protocol = { path = "../crates/touchbar-protocol" }
+
+[[bin]]
+name = "broker-schema"
+path = "fuzz_targets/broker_schema.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "broker-wire"
+path = "fuzz_targets/broker_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy-inputs"
+path = "fuzz_targets/policy_inputs.rs"
+test = false
+doc = false
+bench = false

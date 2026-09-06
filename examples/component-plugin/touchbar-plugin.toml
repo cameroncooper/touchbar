@@ -1,0 +1,31 @@
+manifest_version = 1
+
+[plugin]
+name = "Component Demo"
+version = "0.1.0"
+description = "A sandboxed two-item component and theme propagation demo"
+license = "MIT OR Apache-2.0"
+source = "github:cameroncooper/touchbar-component-demo"
+api = "^1.0"
+
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+
+[[items]]
+id = "hello"
+label = "Hello"
+
+[[items]]
+id = "theme"
+label = "Theme"
+
+[[permission]]
+capability = "context.read.v1"
+required = false
+reason = "Adapt the demo label to the focused application"
+
+[permission.scope]
+facts = ["application.id"]
+maximum_updates_per_second = 10

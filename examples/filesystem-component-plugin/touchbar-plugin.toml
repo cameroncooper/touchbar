@@ -1,0 +1,49 @@
+manifest_version = 1
+
+[plugin]
+name = "Filesystem Component Demo"
+version = "0.1.0"
+description = "Sandboxed user-selected directory read and write example"
+license = "MIT OR Apache-2.0"
+source = "github:cameroncooper/touchbar-filesystem-component-demo"
+api = "^1.0"
+
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+
+[[items]]
+id = "filesystem-demo"
+label = "Files"
+[[items]]
+id = "filesystem-write-demo"
+label = "Save File"
+
+[[permission]]
+capability = "filesystem.read.v1"
+required = true
+reason = "List the selected demo directory and read a bounded preview from its first regular file"
+
+[permission.scope]
+kinds = ["regular-file", "directory"]
+maximum_file_bytes = 4194304
+enumerate = true
+
+[[permission.scope.mounts]]
+label = "gallery"
+suggested_location = "Pictures"
+
+[[permission]]
+capability = "filesystem.write.v1"
+required = true
+reason = "Create one bounded demo file in a user-selected directory"
+
+[permission.scope]
+operations = ["create"]
+maximum_file_bytes = 4096
+maximum_total_bytes_per_hour = 16384
+
+[[permission.scope.mounts]]
+label = "workspace"
+suggested_location = "Documents"

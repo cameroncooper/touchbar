@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "item": "filesystem-demo",
+  "width": 240,
+  "broker": {
+    "filesystem_reads": [
+      {
+        "id": "gallery-list",
+        "operation": "list-directory",
+        "request": {
+          "mount": "gallery",
+          "path": "",
+          "maximum_entries": 64
+        },
+        "responses": [
+          {
+            "kind": "directory",
+            "entries": [
+              {
+                "name": "demo.txt",
+                "kind": "regular-file",
+                "size": 13
+              }
+            ],
+            "truncated": false
+          }
+        ]
+      },
+      {
+        "id": "gallery-preview",
+        "operation": "read-file-stream",
+        "request": {
+          "mount": "gallery",
+          "path": "demo.txt",
+          "offset": 0,
+          "maximum_bytes": 13
+        },
+        "responses": [
+          {
+            "kind": "stream",
+            "total_size": 13,
+            "chunks": [
+              "Hello, ",
+              "world!"
+            ],
+            "terminal_error": null
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "down",
+      "x": 120,
+      "y": 30,
+      "time_ms": 0
+    },
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "up",
+      "x": 120,
+      "y": 30,
+      "time_ms": 50
+    },
+    {
+      "kind": "snapshot",
+      "name": "previewed"
+    }
+  ]
+}

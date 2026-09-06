@@ -1,0 +1,18 @@
+version = 1
+fallback = "default"
+
+[[contribution]]
+id = "controls"
+items = [
+  { plugin = "github:cameroncooper/touchbar-controls", item = "volume", required = true },
+  { plugin = "github:cameroncooper/touchbar-controls", item = "microphone", required = true },
+]
+
+[[profile]]
+id = "default"
+
+[[profile.element]]
+kind = "slot"
+id = "controls"
+policy = "fixed"
+contributions = ["controls"]

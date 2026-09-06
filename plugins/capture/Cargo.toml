@@ -1,0 +1,11 @@
+[package]
+name = "touchbar-first-party-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+touchbar-component-sdk = { path = "../../crates/touchbar-component-sdk" }

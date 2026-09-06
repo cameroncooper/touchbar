@@ -1,0 +1,114 @@
+manifest_version = 1
+
+[plugin]
+name = "System Controls"
+version = "1.0.0"
+description = "Theme-aware volume, brightness, microphone, battery, and power controls"
+license = "MIT OR Apache-2.0"
+source = "github:cameroncooper/touchbar-controls"
+api = "^1.0"
+
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+
+[[items]]
+id = "volume"
+label = "Volume"
+expanded_bar = "volume-controls"
+press_and_hold_bar = "volume-controls"
+
+[[items]]
+id = "brightness"
+label = "Brightness"
+
+[[items]]
+id = "microphone"
+label = "Microphone"
+
+[[items]]
+id = "battery"
+label = "Battery"
+
+[[items]]
+id = "power-profile"
+label = "Power Profile"
+
+[[bar]]
+id = "volume-controls"
+minimum_width = 280
+preferred_width = 360
+maximum_width = 560
+dismiss_on_selection = true
+principal_item = "volume"
+
+[[bar.element]]
+kind = "group"
+id = "audio-actions"
+layout = "natural"
+spacing = 8
+
+[[bar.element.element]]
+kind = "item"
+item = "volume"
+minimum_width = 180
+preferred_width = 240
+maximum_width = 460
+
+[[bar.element.element]]
+kind = "item"
+item = "microphone"
+minimum_width = 92
+preferred_width = 112
+maximum_width = 140
+
+[[permission]]
+capability = "command.run.v1"
+required = false
+reason = "Apply user gestures to PipeWire, display brightness, and power profiles"
+
+[permission.scope]
+maximum_parallel_processes = 1
+
+[[permission.scope.commands]]
+id = "set-volume"
+executable = "/usr/bin/wpctl"
+arguments = [
+  { kind = "literal", value = "set-volume" },
+  { kind = "literal", value = "@DEFAULT_AUDIO_SINK@" },
+  { kind = "bounded-text", name = "percent", maximum_bytes = 4 },
+]
+maximum_output_bytes = 4096
+timeout_milliseconds = 1000
+
+[[permission.scope.commands]]
+id = "toggle-microphone"
+executable = "/usr/bin/wpctl"
+arguments = [
+  { kind = "literal", value = "set-mute" },
+  { kind = "literal", value = "@DEFAULT_AUDIO_SOURCE@" },
+  { kind = "literal", value = "toggle" },
+]
+maximum_output_bytes = 4096
+timeout_milliseconds = 1000
+
+[[permission.scope.commands]]
+id = "set-brightness"
+executable = "/usr/bin/brightnessctl"
+arguments = [
+  { kind = "literal", value = "set" },
+  { kind = "bounded-text", name = "percent", maximum_bytes = 4 },
+]
+maximum_output_bytes = 4096
+timeout_milliseconds = 1000
+
+[[permission.scope.commands]]
+id = "set-power-profile"
+executable = "/usr/bin/powerprofilesctl"
+arguments = [
+  { kind = "literal", value = "set" },
+  { kind = "fixed-enum", name = "profile", values = ["power-saver", "balanced", "performance"] },
+]
+maximum_output_bytes = 4096
+timeout_milliseconds = 1000

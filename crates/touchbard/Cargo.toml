@@ -1,0 +1,22 @@
+[package]
+name = "touchbard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+drm.workspace = true
+glow.workspace = true
+khronos-egl.workspace = true
+libc.workspace = true
+input-linux.workspace = true
+input-linux-sys.workspace = true
+input.workspace = true
+memmap2.workspace = true
+png.workspace = true
+touchbar-protocol = { path = "../touchbar-protocol" }
+touchbar-system-bar = { path = "../touchbar-system-bar" }
+
+[dev-dependencies]
+tempfile.workspace = true

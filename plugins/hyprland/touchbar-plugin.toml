@@ -1,0 +1,101 @@
+manifest_version = 1
+
+[plugin]
+name = "Hyprland Navigator"
+version = "1.0.0"
+description = "Workspace scrubbing, window movement, and focused-window layout actions"
+license = "MIT OR Apache-2.0"
+source = "github:cameroncooper/touchbar-hyprland"
+api = "^1.0"
+
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+
+[[items]]
+id = "workspaces"
+label = "Workspaces"
+expanded_bar = "workspace-actions"
+[[items]]
+id = "window-actions"
+label = "Window Actions"
+[[items]]
+id = "move-window"
+label = "Move Window"
+
+[[bar]]
+id = "workspace-actions"
+minimum_width = 428
+preferred_width = 840
+maximum_width = 1004
+dismiss_on_selection = true
+principal_item = "workspaces"
+
+[[bar.element]]
+kind = "item"
+item = "workspaces"
+minimum_width = 180
+preferred_width = 360
+maximum_width = 520
+
+[[bar.element]]
+kind = "fixed-space"
+width = 8
+
+[[bar.element]]
+kind = "item"
+item = "window-actions"
+minimum_width = 120
+preferred_width = 220
+maximum_width = 280
+
+[[bar.element]]
+kind = "item"
+item = "move-window"
+minimum_width = 120
+preferred_width = 240
+maximum_width = 320
+
+[[permission]]
+capability = "context.read.v1"
+required = false
+reason = "Adapt controls to the focused application and active workspace"
+[permission.scope]
+facts = ["application.id", "workspace.id"]
+maximum_updates_per_second = 10
+
+[[permission]]
+capability = "command.run.v1"
+required = false
+reason = "Send narrowly templated dispatches to the running Hyprland session"
+[permission.scope]
+maximum_parallel_processes = 1
+
+[[permission.scope.commands]]
+id = "workspace"
+executable = "/usr/bin/hyprctl"
+arguments = [{ kind = "literal", value = "dispatch" }, { kind = "literal", value = "workspace" }, { kind = "bounded-integer", name = "workspace", minimum = 1, maximum = 10 }]
+maximum_output_bytes = 4096
+timeout_milliseconds = 1000
+
+[[permission.scope.commands]]
+id = "move-window"
+executable = "/usr/bin/hyprctl"
+arguments = [{ kind = "literal", value = "dispatch" }, { kind = "literal", value = "movetoworkspace" }, { kind = "bounded-integer", name = "workspace", minimum = 1, maximum = 10 }]
+maximum_output_bytes = 4096
+timeout_milliseconds = 1000
+
+[[permission.scope.commands]]
+id = "fullscreen"
+executable = "/usr/bin/hyprctl"
+arguments = [{ kind = "literal", value = "dispatch" }, { kind = "literal", value = "fullscreen" }, { kind = "literal", value = "1" }]
+maximum_output_bytes = 4096
+timeout_milliseconds = 1000
+
+[[permission.scope.commands]]
+id = "toggle-float"
+executable = "/usr/bin/hyprctl"
+arguments = [{ kind = "literal", value = "dispatch" }, { kind = "literal", value = "togglefloating" }]
+maximum_output_bytes = 4096
+timeout_milliseconds = 1000

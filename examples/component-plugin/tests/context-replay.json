@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "item": "hello",
+  "width": 160,
+  "appearance": {
+    "preset": "dark",
+    "colors": {}
+  },
+  "context": {
+    "application.id": "terminal"
+  },
+  "steps": [
+    { "kind": "touch", "contact_id": 1, "phase": "down", "x": 80, "y": 30, "time_ms": 0 },
+    { "kind": "touch", "contact_id": 1, "phase": "up", "x": 80, "y": 30, "time_ms": 50 },
+    { "kind": "context", "facts": { "application.id": "firefox" } },
+    { "kind": "snapshot", "name": "focused-app" }
+  ]
+}

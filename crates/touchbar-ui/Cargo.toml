@@ -1,0 +1,14 @@
+[package]
+name = "touchbar-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+cosmic-text.workspace = true
+glow.workspace = true
+naga.workspace = true
+resvg.workspace = true
+taffy.workspace = true
+touchbar-protocol = { path = "../touchbar-protocol" }

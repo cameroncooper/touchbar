@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "item": "custom-actions",
+  "width": 320,
+  "broker": {
+    "local_connections": [
+      {
+        "id": "custom-action-service",
+        "request": {
+          "endpoint": "command-deck",
+          "protocol": "io.github.cameroncooper.touchbar.command-deck.v1"
+        },
+        "initial_events": [],
+        "exchanges": [
+          {
+            "send": "{\"action\":1}",
+            "result": {
+              "kind": "success"
+            },
+            "events": [
+              {
+                "kind": "frame",
+                "body": "{\"ok\":true,\"action\":1}"
+              },
+              {
+                "kind": "closed"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "down",
+      "x": 40,
+      "y": 30,
+      "time_ms": 0
+    },
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "up",
+      "x": 40,
+      "y": 30,
+      "time_ms": 50
+    },
+    {
+      "kind": "snapshot",
+      "name": "acknowledged"
+    }
+  ]
+}

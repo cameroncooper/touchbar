@@ -1,0 +1,40 @@
+manifest_version = 1
+
+[plugin]
+name = "HTTP Component Demo"
+version = "0.1.0"
+description = "Sandboxed origin-scoped HTTP request example"
+license = "MIT OR Apache-2.0"
+source = "github:cameroncooper/touchbar-http-component-demo"
+api = "^1.0"
+
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+
+[[items]]
+id = "http-demo"
+label = "HTTP Stream"
+
+[[items]]
+id = "http-inline"
+label = "HTTP Inline"
+
+[[permission]]
+capability = "http.request.v1"
+required = false
+reason = "Fetch one public commit summary from the reference repository"
+
+[permission.scope]
+methods = ["GET"]
+private_network = false
+maximum_request_bytes = 1024
+maximum_response_bytes = 49152
+maximum_requests_per_minute = 4
+
+[[permission.scope.origins]]
+scheme = "https"
+host = "api.github.com"
+port = 443
+path_prefixes = ["/repos/cameroncooper/touchbar/commits/"]

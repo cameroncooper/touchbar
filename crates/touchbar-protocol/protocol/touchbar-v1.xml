@@ -1,0 +1,271 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="touchbar_v1">
+  <copyright>
+    Copyright 2026 TouchBar contributors
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software.
+  </copyright>
+
+  <interface name="touchbar_manager_v1" version="1">
+    <description summary="assigns a managed role to Touch Bar plugin surfaces">
+      The manager gives plugin surfaces compositor-controlled geometry. A
+      wl_surface may receive this role only once.
+    </description>
+
+    <request name="get_item_surface">
+      <description summary="assign a role with stable item and sizing metadata">
+        Zero expanded widths declare that this item cannot begin a
+        presentation. Otherwise both compact and expanded widths must be
+        ordered minimum, preferred, maximum with no zero compact values.
+        Anchored, in-place, and slot policies resolve the expanded constraints;
+        named-region and full-bar policies use their exact daemon-owned width.
+        Widths are constraints; the compositor owns final geometry.
+      </description>
+      <arg name="id" type="new_id" interface="touchbar_surface_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="plugin_id" type="string"/>
+      <arg name="item_id" type="string"/>
+      <arg name="compact_min_width" type="uint"/>
+      <arg name="compact_preferred_width" type="uint"/>
+      <arg name="compact_max_width" type="uint"/>
+      <arg name="expanded_min_width" type="uint"/>
+      <arg name="expanded_preferred_width" type="uint"/>
+      <arg name="expanded_max_width" type="uint"/>
+    </request>
+
+    <request name="get_backdrop_surface">
+      <description summary="assign a non-interactive full-canvas backdrop role">
+        The compositor configures this surface to the complete logical canvas
+        and places it below item and overlay surfaces. At most one backdrop is
+        active. Its alpha is composed over the compositor fallback color.
+      </description>
+      <arg name="id" type="new_id" interface="touchbar_surface_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="plugin_id" type="string"/>
+    </request>
+
+    <request name="get_appearance">
+      <description summary="subscribe to atomic semantic appearance snapshots"/>
+      <arg name="id" type="new_id" interface="touchbar_appearance_v1"/>
+    </request>
+
+    <request name="destroy" type="destructor"/>
+  </interface>
+
+  <interface name="touchbar_appearance_v1" version="1">
+    <description summary="toolkit-neutral semantic appearance snapshots">
+      A snapshot starts with begin, contains exactly one value for each core
+      color role, and becomes active only on done. Colors use unpremultiplied
+      0xRRGGBBAA encoding; renderers must premultiply at rasterization time.
+    </description>
+
+    <enum name="scheme">
+      <entry name="dark" value="0"/>
+      <entry name="light" value="1"/>
+    </enum>
+
+    <enum name="motion_policy">
+      <entry name="full" value="0"/>
+      <entry name="reduced" value="1"/>
+      <entry name="disabled" value="2"/>
+    </enum>
+
+    <enum name="color_role">
+      <entry name="background" value="0"/>
+      <entry name="surface" value="1"/>
+      <entry name="surface_hover" value="2"/>
+      <entry name="surface_pressed" value="3"/>
+      <entry name="foreground" value="4"/>
+      <entry name="muted" value="5"/>
+      <entry name="accent" value="6"/>
+      <entry name="destructive" value="7"/>
+    </enum>
+
+    <event name="begin">
+      <arg name="generation" type="uint"/>
+      <arg name="scheme" type="uint" enum="scheme"/>
+      <arg name="motion" type="uint" enum="motion_policy"/>
+      <arg name="corner_radius_millipixels" type="uint"/>
+    </event>
+
+    <event name="color">
+      <arg name="generation" type="uint"/>
+      <arg name="role" type="uint" enum="color_role"/>
+      <arg name="rgba" type="uint" summary="unpremultiplied 0xRRGGBBAA"/>
+    </event>
+
+    <event name="done">
+      <arg name="generation" type="uint"/>
+    </event>
+
+    <request name="destroy" type="destructor"/>
+  </interface>
+
+  <interface name="touchbar_surface_v1" version="1">
+    <description summary="compositor-managed plugin surface">
+      A role for one plugin surface. The compositor chooses its dimensions and
+      placement; attached buffers must match the most recently acknowledged
+      configure event.
+    </description>
+
+    <request name="ack_configure">
+      <arg name="serial" type="uint"/>
+    </request>
+
+    <enum name="error">
+      <entry name="duplicate_acquire_fence" value="0"
+             summary="more than one acquire fence was supplied for one commit"/>
+      <entry name="acquire_fence_without_buffer" value="1"
+             summary="an acquire fence was committed without a buffer"/>
+      <entry name="acquire_fence_unsupported_buffer" value="2"
+             summary="an acquire fence was supplied for a non-DMA-BUF buffer"/>
+      <entry name="invalid_acquire_fence" value="3"
+             summary="the supplied fd is not a valid Linux sync_file"/>
+    </enum>
+
+    <request name="set_acquire_fence">
+      <description summary="set a GPU acquire fence for the next surface commit">
+        The fd must refer to a Linux sync_file produced after rendering the
+        buffer attached by the next wl_surface.commit. The compositor imports
+        it and queues a GPU-side wait before sampling that DMA-BUF; it never
+        blocks its event thread. The fence is single-use double-buffered state.
+        Supplying more than one fence before a commit, committing without a
+        buffer, or attaching a non-DMA-BUF buffer is a protocol error.
+
+        A client may omit this request when its graphics stack provides only
+        implicit DMA-BUF synchronization. The TouchBar Rust GLES runtime sends
+        it whenever EGL_ANDROID_native_fence_sync is available.
+      </description>
+      <arg name="fd" type="fd"/>
+    </request>
+
+    <enum name="presentation_policy">
+      <entry name="anchored" value="0" summary="bounded overlay anchored to its compact item"/>
+      <entry name="in_place" value="1" summary="expansion participating in bar layout"/>
+      <entry name="slot" value="2" summary="overlay assigned to a named user slot"/>
+      <entry name="region" value="3" summary="overlay assigned to a named user region"/>
+      <entry name="full_bar" value="4" summary="explicit complete-bar presentation"/>
+    </enum>
+
+    <enum name="presentation_lifecycle">
+      <entry name="transient" value="0" summary="bound to the supplied captured contact"/>
+      <entry name="persistent" value="1" summary="accepts later contacts until dismissed"/>
+    </enum>
+
+    <enum name="dismiss_reason">
+      <entry name="requested" value="0"/>
+      <entry name="selection" value="1"/>
+      <entry name="outside_press" value="2"/>
+      <entry name="timeout" value="3"/>
+      <entry name="source_hidden" value="4"/>
+      <entry name="replaced" value="5"/>
+      <entry name="rejected" value="6"/>
+    </enum>
+
+    <enum name="input_origin">
+      <entry name="physical" value="0" summary="contact from the physical Touch Bar"/>
+      <entry name="synthetic" value="1" summary="developer preview or test input without user-activation authority"/>
+    </enum>
+
+    <request name="begin_presentation">
+      <description summary="begin one identified compositor-managed presentation">
+        session_id must be nonzero and monotonically unique within the surface.
+        A transient lifecycle requires a nonzero captured contact. Persistent
+        lifecycle requires contact_id zero. target is empty for anchored,
+        in-place, and full-bar policies and names daemon-owned slots or regions.
+      </description>
+      <arg name="session_id" type="uint"/>
+      <arg name="policy" type="uint" enum="presentation_policy"/>
+      <arg name="lifecycle" type="uint" enum="presentation_lifecycle"/>
+      <arg name="contact_id" type="uint"/>
+      <arg name="target" type="string"/>
+    </request>
+
+    <request name="end_presentation">
+      <description summary="end only the matching active session">
+        A stale session ID is ignored and cannot dismiss a newer presentation.
+      </description>
+      <arg name="session_id" type="uint"/>
+      <arg name="reason" type="uint" enum="dismiss_reason"/>
+    </request>
+
+    <request name="destroy" type="destructor"/>
+
+    <event name="configure">
+      <arg name="serial" type="uint"/>
+      <arg name="width" type="uint"/>
+      <arg name="height" type="uint"/>
+      <arg name="refresh_millihz" type="uint"/>
+    </event>
+
+    <event name="visibility">
+      <arg name="visible" type="uint" summary="1 when visible, otherwise 0"/>
+    </event>
+
+    <event name="touch_down">
+      <description summary="touch down with a compositor-issued gesture sequence">
+        sequence_hi and sequence_lo form one nonzero 64-bit sequence that is
+        stable for the complete captured contact and unique for the compositor
+        process lifetime.
+      </description>
+      <arg name="time" type="uint" summary="milliseconds on the compositor clock"/>
+      <arg name="contact_id" type="uint"/>
+      <arg name="x" type="fixed" summary="surface-local horizontal coordinate"/>
+      <arg name="y" type="fixed" summary="surface-local vertical coordinate"/>
+      <arg name="sequence_hi" type="uint"/>
+      <arg name="sequence_lo" type="uint"/>
+      <arg name="origin" type="uint" enum="input_origin"/>
+    </event>
+
+    <event name="touch_motion">
+      <arg name="time" type="uint" summary="milliseconds on the compositor clock"/>
+      <arg name="contact_id" type="uint"/>
+      <arg name="x" type="fixed" summary="surface-local horizontal coordinate"/>
+      <arg name="y" type="fixed" summary="surface-local vertical coordinate"/>
+      <arg name="sequence_hi" type="uint"/>
+      <arg name="sequence_lo" type="uint"/>
+      <arg name="origin" type="uint" enum="input_origin"/>
+    </event>
+
+    <event name="touch_up">
+      <arg name="time" type="uint" summary="milliseconds on the compositor clock"/>
+      <arg name="contact_id" type="uint"/>
+      <arg name="x" type="fixed" summary="last surface-local horizontal coordinate"/>
+      <arg name="y" type="fixed" summary="last surface-local vertical coordinate"/>
+      <arg name="sequence_hi" type="uint"/>
+      <arg name="sequence_lo" type="uint"/>
+      <arg name="origin" type="uint" enum="input_origin"/>
+    </event>
+
+    <event name="touch_cancel">
+      <arg name="time" type="uint" summary="milliseconds on the compositor clock"/>
+      <arg name="contact_id" type="uint"/>
+      <arg name="sequence_hi" type="uint"/>
+      <arg name="sequence_lo" type="uint"/>
+      <arg name="origin" type="uint" enum="input_origin"/>
+    </event>
+
+    <event name="presentation_anchor">
+      <arg name="session_id" type="uint"/>
+      <arg name="x" type="fixed"/>
+      <arg name="width" type="uint"/>
+    </event>
+
+    <event name="presentation_started">
+      <arg name="session_id" type="uint"/>
+      <arg name="policy" type="uint" enum="presentation_policy"/>
+      <arg name="lifecycle" type="uint" enum="presentation_lifecycle"/>
+      <arg name="contact_id" type="uint"/>
+      <arg name="target" type="string"/>
+    </event>
+
+    <event name="presentation_ended">
+      <arg name="session_id" type="uint"/>
+      <arg name="reason" type="uint" enum="dismiss_reason"/>
+    </event>
+  </interface>
+</protocol>

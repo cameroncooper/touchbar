@@ -1,0 +1,121 @@
+version = 1
+fallback = "default"
+
+# Named overlay destinations are independent of slot composition. Only one
+# presentation session is active at a time, so regions may overlap if desired.
+[[region]]
+id = "center"
+x = 504
+width = 1000
+
+# Plugin and item are separate so two packages may safely use the same local
+# item name. Mark an item required only when the whole profile must fail closed
+# to the trusted system row while that item is unavailable.
+[[contribution]]
+id = "workspaces"
+items = [
+  { plugin = "github:cameroncooper/touchbar-hyprland", item = "workspaces", required = false },
+]
+
+[[contribution]]
+id = "focused-window"
+scope = "application"
+priority = 100
+when = { kind = "present", key = "application.id" }
+items = [
+  { plugin = "github:cameroncooper/touchbar-hyprland", item = "window-actions", required = false },
+]
+
+[[contribution]]
+id = "media"
+scope = "application"
+priority = 200
+when = { kind = "any", predicates = [
+  { kind = "text-equals", key = "application.id", value = "spotify" },
+  { kind = "text-equals", key = "application.id", value = "mpv" },
+  { kind = "text-equals", key = "application.id", value = "firefox" },
+] }
+items = [
+  { plugin = "github:cameroncooper/touchbar-media", item = "now-playing", required = false },
+  { plugin = "github:cameroncooper/touchbar-media", item = "transport", required = false },
+]
+
+[[contribution]]
+id = "status"
+items = [
+  { plugin = "github:cameroncooper/touchbar-capture", item = "recording", required = false },
+  { plugin = "github:cameroncooper/touchbar-controls", item = "microphone", required = false },
+  { plugin = "github:cameroncooper/touchbar-controls", item = "volume", required = false },
+  { plugin = "github:cameroncooper/touchbar-controls", item = "battery", required = false },
+]
+
+[[contribution]]
+id = "media-full"
+items = [
+  { plugin = "github:cameroncooper/touchbar-media", item = "now-playing", required = false },
+  { plugin = "github:cameroncooper/touchbar-media", item = "transport", required = false },
+  { plugin = "github:cameroncooper/touchbar-media", item = "timeline", required = false },
+]
+
+[[profile]]
+id = "default"
+
+[[profile.element]]
+kind = "slot"
+id = "workspaces"
+policy = "fixed"
+contributions = ["workspaces"]
+
+[[profile.element]]
+kind = "flexible-space"
+minimum = 8
+weight = 1
+
+[[profile.element]]
+kind = "slot"
+id = "application"
+policy = "select"
+contributions = ["focused-window", "media"]
+
+[[profile.element]]
+kind = "flexible-space"
+minimum = 8
+weight = 1
+
+[[profile.element]]
+kind = "slot"
+id = "status"
+policy = "fixed"
+contributions = ["status"]
+
+[[profile]]
+id = "minimal"
+
+[[profile.element]]
+kind = "flexible-space"
+minimum = 8
+weight = 1
+
+[[profile.element]]
+kind = "slot"
+id = "status"
+policy = "fixed"
+contributions = ["status"]
+
+[[profile]]
+id = "media"
+principal_item = { plugin = "github:cameroncooper/touchbar-media", item = "timeline" }
+
+[[profile.element]]
+kind = "slot"
+id = "media"
+policy = "fixed"
+contributions = ["media-full"]
+
+[[rule]]
+profile = "media"
+priority = 100
+when = { kind = "any", predicates = [
+  { kind = "text-equals", key = "application.id", value = "spotify" },
+  { kind = "text-equals", key = "application.id", value = "mpv" },
+] }

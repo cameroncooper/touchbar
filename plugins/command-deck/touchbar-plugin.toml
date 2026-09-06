@@ -1,0 +1,109 @@
+manifest_version = 1
+
+[plugin]
+name = "Command Deck"
+version = "1.0.0"
+description = "Quick launch, session, and user-defined actions"
+license = "MIT OR Apache-2.0"
+source = "github:cameroncooper/touchbar-command-deck"
+api = "^1.0"
+
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+
+[[items]]
+id = "quick-actions"
+label = "Quick Actions"
+expanded_bar = "quick-actions-expanded"
+[[items]]
+id = "launchers"
+label = "Launchers"
+[[items]]
+id = "session"
+label = "Session Actions"
+[[items]]
+id = "custom-actions"
+label = "Custom Actions"
+
+[[bar]]
+id = "quick-actions-expanded"
+minimum_width = 408
+preferred_width = 720
+maximum_width = 1004
+dismiss_on_selection = true
+principal_item = "quick-actions"
+
+[[bar.element]]
+kind = "item"
+item = "quick-actions"
+minimum_width = 100
+preferred_width = 160
+maximum_width = 240
+
+[[bar.element]]
+kind = "item"
+item = "launchers"
+minimum_width = 100
+preferred_width = 180
+maximum_width = 280
+
+[[bar.element]]
+kind = "flexible-space"
+minimum = 8
+weight = 1
+
+[[bar.element]]
+kind = "item"
+item = "session"
+minimum_width = 100
+preferred_width = 160
+maximum_width = 240
+
+[[bar.element]]
+kind = "item"
+item = "custom-actions"
+minimum_width = 100
+preferred_width = 212
+maximum_width = 320
+
+[[permission]]
+capability = "command.run.v1"
+required = false
+reason = "Launch a terminal, run a harmless diagnostic probe, and perform the guarded lock-session action"
+[permission.scope]
+maximum_parallel_processes = 2
+
+[[permission.scope.commands]]
+id = "terminal"
+executable = "/usr/bin/xdg-terminal-exec"
+arguments = []
+maximum_output_bytes = 4096
+timeout_milliseconds = 5000
+
+[[permission.scope.commands]]
+id = "probe"
+executable = "/usr/bin/printf"
+arguments = [{ kind = "literal", value = "touchbar command probe\n" }]
+maximum_output_bytes = 4096
+timeout_milliseconds = 2000
+
+[[permission.scope.commands]]
+id = "lock"
+executable = "/usr/bin/loginctl"
+arguments = [{ kind = "literal", value = "lock-session" }]
+maximum_output_bytes = 4096
+timeout_milliseconds = 5000
+
+[[permission]]
+capability = "local.connect.v1"
+required = false
+reason = "Invoke user-defined actions through an explicitly bound local Command Deck service"
+[permission.scope]
+maximum_frame_bytes = 4096
+maximum_bytes_per_minute = 65536
+[[permission.scope.endpoints]]
+label = "command-deck"
+protocol = "io.github.cameroncooper.touchbar.command-deck.v1"
+suggested_endpoint = "$XDG_RUNTIME_DIR/touchbar/command-deck.sock"

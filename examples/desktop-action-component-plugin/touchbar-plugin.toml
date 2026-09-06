@@ -1,0 +1,43 @@
+manifest_version = 1
+
+[plugin]
+name = "Desktop Action Component Demo"
+version = "0.1.0"
+description = "Sandboxed notification and activation-gated URI example"
+license = "MIT OR Apache-2.0"
+source = "github:cameroncooper/touchbar-desktop-action-component-demo"
+api = "^1.0"
+
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+
+[[items]]
+id = "desktop-actions"
+label = "Desktop actions"
+
+[[permission]]
+capability = "notification.send.v1"
+required = false
+reason = "Show a bounded status notification requested by the user"
+
+[permission.scope]
+categories = ["status"]
+urgency = ["normal"]
+actions = false
+maximum_per_minute = 4
+
+[[permission]]
+capability = "uri.open.v1"
+required = false
+reason = "Open the Touch Bar documentation after an explicit tap"
+
+[permission.scope]
+schemes = ["https"]
+
+[[permission.scope.origins]]
+scheme = "https"
+host = "github.com"
+port = 443
+path_prefixes = ["/cameroncooper/touchbar/"]

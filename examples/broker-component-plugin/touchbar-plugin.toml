@@ -1,0 +1,70 @@
+manifest_version = 1
+
+[plugin]
+name = "Broker Component Demo"
+version = "0.1.0"
+description = "Sandboxed MPRIS property and Play/Pause broker example"
+license = "MIT OR Apache-2.0"
+source = "github:cameroncooper/touchbar-broker-component-demo"
+api = "^1.0"
+
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+
+[[items]]
+id = "media-broker"
+label = "Media broker"
+
+[[permission]]
+capability = "dbus.call.v1"
+required = false
+reason = "Read playback state and control the selected MPRIS player"
+
+[permission.scope]
+
+[[permission.scope.rules]]
+bus = "session"
+destination = "org.mpris.MediaPlayer2.*"
+path = "/org/mpris/MediaPlayer2"
+interface = "org.freedesktop.DBus.Properties"
+member = "Get"
+signature = "ss"
+allow_service_activation = false
+requires_user_activation = false
+
+[[permission.scope.rules.arguments]]
+index = 0
+equals_string = "org.mpris.MediaPlayer2.Player"
+
+[[permission.scope.rules.arguments]]
+index = 1
+equals_string = "PlaybackStatus"
+
+[[permission.scope.rules]]
+bus = "session"
+destination = "org.mpris.MediaPlayer2.*"
+path = "/org/mpris/MediaPlayer2"
+interface = "org.mpris.MediaPlayer2.Player"
+member = "PlayPause"
+signature = ""
+allow_service_activation = false
+requires_user_activation = true
+
+[[permission]]
+capability = "dbus.subscribe.v1"
+required = false
+reason = "Watch the selected MPRIS player's playback state"
+
+[permission.scope]
+maximum_events_per_second = 30
+
+[[permission.scope.rules]]
+bus = "session"
+sender = "org.mpris.MediaPlayer2.playerctld"
+path = "/org/mpris/MediaPlayer2"
+interface = "org.freedesktop.DBus.Properties"
+member = "PropertiesChanged"
+signature = "sa{sv}as"
+argument_zero = "org.mpris.MediaPlayer2.Player"

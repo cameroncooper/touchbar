@@ -1,0 +1,66 @@
+manifest_version = 1
+
+[plugin]
+name = "Capture Studio"
+version = "1.0.0"
+description = "Screenshots, recording controls, OCR, QR decoding, and color picking"
+license = "MIT OR Apache-2.0"
+source = "github:cameroncooper/touchbar-capture"
+api = "^1.0"
+
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+
+[[items]]
+id = "screenshots"
+label = "Screenshots"
+expanded_bar = "capture-palette"
+[[items]]
+id = "recording"
+label = "Recording"
+[[items]]
+id = "capture-tools"
+label = "Capture Tools"
+
+[[bar]]
+id = "capture-palette"
+minimum_width = 240
+preferred_width = 480
+maximum_width = 720
+dismiss_on_selection = true
+principal_item = "screenshots"
+
+[[bar.element]]
+kind = "item"
+item = "screenshots"
+minimum_width = 80
+preferred_width = 160
+maximum_width = 240
+
+[[bar.element]]
+kind = "item"
+item = "recording"
+minimum_width = 80
+preferred_width = 160
+maximum_width = 240
+
+[[bar.element]]
+kind = "item"
+item = "capture-tools"
+minimum_width = 80
+preferred_width = 160
+maximum_width = 240
+
+[[permission]]
+capability = "local.connect.v1"
+required = false
+reason = "Send structured capture actions to an explicitly bound user-owned service"
+[permission.scope]
+maximum_frame_bytes = 4096
+maximum_bytes_per_minute = 65536
+[[permission.scope.endpoints]]
+label = "capture"
+protocol = "io.github.cameroncooper.touchbar.capture.v1"
+suggested_endpoint = "$XDG_RUNTIME_DIR/touchbar/capture.sock"

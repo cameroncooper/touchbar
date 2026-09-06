@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "item": "desktop-actions",
+  "width": 320,
+  "broker": {
+    "notification_requests": [
+      {
+        "id": "ready-notification",
+        "operation": "send",
+        "request": {
+          "id": "demo-ready",
+          "category": "status",
+          "urgency": "normal",
+          "title": "TouchBar plugin ready",
+          "body": "The sandboxed notification request completed."
+        },
+        "responses": [
+          { "kind": "success" }
+        ]
+      }
+    ],
+    "uri_opens": [
+      {
+        "id": "touchbar-docs",
+        "request": {
+          "uri": "https://github.com/cameroncooper/touchbar/blob/main/docs/fixes/09-touch-bar.md"
+        },
+        "responses": [
+          { "kind": "success" }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "down",
+      "x": 80,
+      "y": 30,
+      "time_ms": 0
+    },
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "up",
+      "x": 80,
+      "y": 30,
+      "time_ms": 50
+    },
+    {
+      "kind": "snapshot",
+      "name": "notified"
+    },
+    {
+      "kind": "touch",
+      "contact_id": 2,
+      "phase": "down",
+      "x": 240,
+      "y": 30,
+      "time_ms": 100
+    },
+    {
+      "kind": "touch",
+      "contact_id": 2,
+      "phase": "up",
+      "x": 240,
+      "y": 30,
+      "time_ms": 150
+    },
+    {
+      "kind": "snapshot",
+      "name": "opened"
+    }
+  ]
+}

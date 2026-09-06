@@ -1,0 +1,10 @@
+# Build output. Unanchored so it also covers the non-workspace crates
+# (examples/component-plugin, fuzz) that build into their own target/.
+target/
+
+# Demo and acceptance-run scratch: logs, sockets, stores, audit records.
+/run/
+
+# Fuzzing corpora and crash artifacts.
+/fuzz/artifacts/
+/fuzz/corpus/

@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "item": "clipboard-demo",
+  "width": 320,
+  "broker": {
+    "clipboard_requests": [
+      {
+        "id": "read-text",
+        "operation": "read",
+        "request": {
+          "mime_type": "text/plain;charset=utf-8"
+        },
+        "responses": [
+          {
+            "kind": "value",
+            "mime_type": "text/plain;charset=utf-8",
+            "body": "hello from replay"
+          }
+        ]
+      },
+      {
+        "id": "write-text",
+        "operation": "write",
+        "request": {
+          "mime_type": "text/plain;charset=utf-8",
+          "body": "copied by plugin"
+        },
+        "responses": [
+          { "kind": "success" }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "down",
+      "x": 80,
+      "y": 30,
+      "time_ms": 0
+    },
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "up",
+      "x": 80,
+      "y": 30,
+      "time_ms": 50
+    },
+    {
+      "kind": "snapshot",
+      "name": "read"
+    },
+    {
+      "kind": "touch",
+      "contact_id": 2,
+      "phase": "down",
+      "x": 240,
+      "y": 30,
+      "time_ms": 100
+    },
+    {
+      "kind": "touch",
+      "contact_id": 2,
+      "phase": "up",
+      "x": 240,
+      "y": 30,
+      "time_ms": 150
+    },
+    {
+      "kind": "snapshot",
+      "name": "wrote"
+    }
+  ]
+}

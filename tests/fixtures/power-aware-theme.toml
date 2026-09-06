@@ -1,0 +1,10 @@
+mode = "dark"
+accent = "#798186"
+selection = "#343d41"
+muted = "#4b4e55"
+background = "#101315"
+foreground = "#cacccc"
+red = "#de6145"
+motion = "full"
+animation_hz = 60
+battery_animation_hz = 30

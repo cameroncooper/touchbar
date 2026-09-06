@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "item": "http-demo",
+  "width": 240,
+  "broker": {
+    "http_requests": [
+      {
+        "id": "latest-commit",
+        "operation": "request-stream",
+        "request": {
+          "method": "GET",
+          "url": "https://api.github.com/repos/cameroncooper/touchbar/commits/?per_page=1",
+          "accept": "application/vnd.github+json",
+          "content_type": null,
+          "body": null
+        },
+        "responses": [
+          {
+            "kind": "stream",
+            "status": 200,
+            "final_url": "https://api.github.com/repos/cameroncooper/touchbar/commits/?per_page=1",
+            "content_type": "application/json",
+            "etag": "fixture-v1",
+            "chunks": [
+              "{\"sha\":",
+              "\"abc\"}"
+            ],
+            "terminal_error": null
+          }
+        ]
+      }
+    ]
+  },
+  "steps": [
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "down",
+      "x": 120,
+      "y": 30,
+      "time_ms": 0
+    },
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "up",
+      "x": 120,
+      "y": 30,
+      "time_ms": 50
+    },
+    {
+      "kind": "snapshot",
+      "name": "fetched"
+    }
+  ]
+}

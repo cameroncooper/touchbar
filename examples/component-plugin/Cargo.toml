@@ -1,0 +1,11 @@
+[package]
+name = "touchbar-component-demo"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+touchbar-component-sdk = { path = "../../crates/touchbar-component-sdk" }

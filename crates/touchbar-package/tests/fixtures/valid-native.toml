@@ -1,0 +1,20 @@
+manifest_version = 1
+
+[plugin]
+name = "Raw Shader Gallery"
+version = "0.1.0"
+description = "A trusted native GLES plugin"
+license = "MIT OR Apache-2.0"
+source = "github:alice/touchbar-shaders"
+api = "0.1"
+
+[runtime]
+kind = "native"
+targets = [
+  { target = "aarch64-unknown-linux-gnu", entrypoint = "native/aarch64/plugin" },
+  { target = "x86_64-unknown-linux-gnu", entrypoint = "native/x86_64/plugin" },
+]
+
+[[items]]
+id = "shader-gallery"
+label = "Shader Gallery"

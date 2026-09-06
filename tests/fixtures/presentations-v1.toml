@@ -1,0 +1,30 @@
+version = 1
+fallback = "default"
+
+[[region]]
+id = "palette"
+x = 0
+width = 1000
+
+[[contribution]]
+id = "source"
+items = [{ plugin = "touchbar.ui-demo", item = "audio.volume", required = true }]
+
+[[contribution]]
+id = "companion"
+items = [{ plugin = "demo.companion", item = "status", required = true }]
+
+[[profile]]
+id = "default"
+
+[[profile.element]]
+kind = "slot"
+id = "leading"
+policy = "fixed"
+contributions = ["source"]
+
+[[profile.element]]
+kind = "slot"
+id = "content"
+policy = "fixed"
+contributions = ["companion"]

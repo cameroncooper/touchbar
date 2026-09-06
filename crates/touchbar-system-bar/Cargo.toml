@@ -1,0 +1,9 @@
+[package]
+name = "touchbar-system-bar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+touchbar-protocol = { path = "../touchbar-protocol" }
+touchbar-ui = { path = "../touchbar-ui" }

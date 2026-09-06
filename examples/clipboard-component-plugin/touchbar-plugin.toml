@@ -1,0 +1,38 @@
+manifest_version = 1
+
+[plugin]
+name = "Clipboard Component Demo"
+version = "0.1.0"
+description = "Sandboxed, activation-gated clipboard read and write example"
+license = "MIT OR Apache-2.0"
+source = "github:cameroncooper/touchbar-clipboard-component-demo"
+api = "^1.0"
+
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+
+[[items]]
+id = "clipboard-demo"
+label = "Clipboard demo"
+
+[[permission]]
+capability = "clipboard.read.v1"
+required = false
+reason = "Read explicitly tapped plain-text clipboard content"
+
+[permission.scope]
+mime_types = ["text/plain;charset=utf-8"]
+maximum_bytes = 4096
+maximum_operations_per_minute = 8
+
+[[permission]]
+capability = "clipboard.write.v1"
+required = false
+reason = "Write one fixed plain-text value after an explicit tap"
+
+[permission.scope]
+mime_types = ["text/plain;charset=utf-8"]
+maximum_bytes = 4096
+maximum_operations_per_minute = 8

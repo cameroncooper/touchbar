@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 264 60">
+  <!-- Neutral TouchBar wordmark. The host treats this file as an alpha mask,
+       so its color always follows the active theme. -->
+  <g fill="#fff">
+    <path d="M8 8h72v12H50v32H38V20H8z"/>
+    <path fill-rule="evenodd" d="M92 8h42c14 0 22 7 22 18 0 6-3 11-8 14 7 3 11 8 11 15 0 13-9 21-25 21H92V8zm14 12v15h27c6 0 9-3 9-8s-3-7-9-7h-27zm0 27v17h29c7 0 10-3 10-9 0-5-3-8-10-8h-29z" transform="translate(0 -8)"/>
+    <rect x="174" y="8" width="82" height="44" rx="12"/>
+    <rect x="188" y="20" width="54" height="20" rx="6" fill="#000"/>
+  </g>
+</svg>
