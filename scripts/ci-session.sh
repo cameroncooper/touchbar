@@ -22,13 +22,22 @@ have_session_bus() {
     [[ -n ${DBUS_SESSION_BUS_ADDRESS:-} ]]
 }
 
+# This must match the supervisor's own check exactly. Testing only for
+# ownership is not enough: a cgroup owned by this user but writable by group or
+# other is still rejected, and treating it as usable makes every caller skip
+# the delegated scope it actually needs.
 own_cgroup() {
-    local relative root directory
+    local relative root directory owner mode
     relative=$(awk -F: '$1 == "0" { print $3 }' /proc/self/cgroup 2>/dev/null) || return 1
     [[ -n "$relative" ]] || return 1
     root=/sys/fs/cgroup
     directory="$root${relative}"
-    [[ -d "$directory" && -O "$directory" ]]
+    [[ -d "$directory" ]] || return 1
+    owner=$(stat -c %u "$directory" 2>/dev/null) || return 1
+    mode=$(stat -c %a "$directory" 2>/dev/null) || return 1
+    [[ "$owner" == "$(id -u)" ]] || return 1
+    (( 8#$mode & 8#022 )) && return 1
+    return 0
 }
 
 command=("$@")

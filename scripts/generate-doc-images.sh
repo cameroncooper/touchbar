@@ -2,10 +2,13 @@
 # Render every documented Touch Bar item to PNG through the production
 # renderer, at each responsive width, in both themes.
 #
-# The images are deterministic: the replay clock only advances when a scenario
-# says so, and no host service is contacted. Regenerating on an unchanged tree
-# must produce byte-identical files, so `--check` can run in CI and a UI
-# regression surfaces as a documentation diff.
+# Replay is deterministic in everything it controls: the clock only advances
+# when a scenario says so, and no host service is contacted. Rasterization is
+# not, because it runs on whatever GPU is present, so output is byte-identical
+# on one machine but differs between renderers.
+#
+# `--check` is therefore a local tool for confirming a tree is current, not a
+# cross-machine CI gate. Regenerate on the same machine that last did.
 set -euo pipefail
 
 project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
