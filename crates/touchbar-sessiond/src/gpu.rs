@@ -281,8 +281,12 @@ impl GpuCompositor {
         if usize::from(info.buffer_count) != buffers.len() {
             bail!("ADP output descriptor count does not match its metadata");
         }
-        if info.logical_height != self.height || info.logical_width < self.width {
-            bail!("ADP output logical size is incompatible with the compositor scene");
+        if info.logical_height != self.height {
+            bail!(
+                "output logical height {} does not match the compositor scene height {}",
+                info.logical_height,
+                self.height
+            );
         }
         // The presenter declares its physical scanout layout; the compositor
         // derives the transform rather than assuming one, so an already
@@ -297,6 +301,10 @@ impl GpuCompositor {
         };
 
         self.destroy_output_swapchain();
+        // The panel decides the canvas. Resize before importing so the scene
+        // spans the strip the presenter actually owns.
+        self.resize_scene(info.logical_width)
+            .context("resize composed scene to the attached panel")?;
         let mut imported = Vec::with_capacity(buffers.len());
         for fd in buffers {
             match self.import_output_buffer(info, fd) {
@@ -780,6 +788,33 @@ impl GpuCompositor {
                 let _ = self.egl.destroy_image(self.display, buffer.image);
             }
         }
+    }
+
+    /// The logical scene width this compositor composes into. It follows the
+    /// attached panel rather than a compile-time constant, so a wider Touch
+    /// Bar composes a wider scene instead of being letterboxed.
+    pub fn canvas_width(&self) -> u32 {
+        self.width
+    }
+
+    /// Resize the composed scene. Called when a presenter attaches a panel
+    /// whose logical width differs from the current scene, which happens
+    /// before any layer exists, so no layer geometry is invalidated.
+    fn resize_scene(&mut self, width: u32) -> Result<()> {
+        if width == self.width {
+            return Ok(());
+        }
+        // SAFETY: the compositor GL context is current for the lifetime of
+        // this struct, and both objects were created by it.
+        let (texture, framebuffer) = unsafe {
+            self.gl.delete_framebuffer(self.scene_framebuffer);
+            self.gl.delete_texture(self.scene_texture);
+            create_color_target(&self.gl, width, self.height, "scene")?
+        };
+        self.scene_texture = texture;
+        self.scene_framebuffer = framebuffer;
+        self.width = width;
+        Ok(())
     }
 
     fn destroy_output_swapchain(&mut self) {

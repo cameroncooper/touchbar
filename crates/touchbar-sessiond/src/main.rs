@@ -582,21 +582,19 @@ impl State {
         let appearance_source = AppearanceSource::discover();
         let power_source = PowerSource::discover();
         gpu.set_background_color(Self::gpu_color(appearance_source.snapshot().background));
-        let mut system_scene =
-            system_bar.then(|| SystemScene::new(DEFAULT_REGION_WIDTH, TOUCHBAR_HEIGHT));
+        // The canvas follows the attached panel; a presenter that already
+        // installed a swapchain has resized the scene by now.
+        let canvas_width = gpu.canvas_width();
+        let mut system_scene = system_bar.then(|| SystemScene::new(canvas_width, TOUCHBAR_HEIGHT));
         if let Some(scene) = &mut system_scene {
             let pixels = scene
-                .render(
-                    appearance_source.snapshot(),
-                    DEFAULT_REGION_WIDTH,
-                    TOUCHBAR_HEIGHT,
-                )
+                .render(appearance_source.snapshot(), canvas_width, TOUCHBAR_HEIGHT)
                 .to_vec();
             gpu.update_rgba_layer(
                 system_scene::LAYER_ID,
                 LayerGeometry {
                     x: 0,
-                    width: DEFAULT_REGION_WIDTH,
+                    width: canvas_width,
                     height: TOUCHBAR_HEIGHT,
                     opacity: 1.0,
                     z_index: u32::MAX - 1,
@@ -1316,7 +1314,7 @@ impl State {
         event: OutputTouchEvent,
         origin: touchbar_surface_v1::InputOrigin,
     ) {
-        let placeholder_left = DEFAULT_REGION_WIDTH.saturating_sub(status_scene::WIDTH);
+        let placeholder_left = self.gpu.canvas_width().saturating_sub(status_scene::WIDTH);
         let placeholder_captured = self.placeholder_contacts.contains(&event.contact_id);
         let placeholder_hit = self.plugin_placeholder.is_some()
             && !self.fn_pressed
@@ -1428,13 +1426,14 @@ impl State {
         if !self.system_scene_visible {
             return Ok(());
         }
+        let canvas_width = self.gpu.canvas_width();
         let Some(scene) = &mut self.system_scene else {
             return Ok(());
         };
         let pixels = scene
             .render(
                 self.appearance_source.snapshot(),
-                DEFAULT_REGION_WIDTH,
+                canvas_width,
                 TOUCHBAR_HEIGHT,
             )
             .to_vec();
@@ -1442,7 +1441,7 @@ impl State {
             system_scene::LAYER_ID,
             LayerGeometry {
                 x: 0,
-                width: DEFAULT_REGION_WIDTH,
+                width: canvas_width,
                 height: TOUCHBAR_HEIGHT,
                 opacity: 1.0,
                 z_index: u32::MAX - 1,
@@ -1488,10 +1487,11 @@ impl State {
                 TOUCHBAR_HEIGHT,
             )
             .to_vec();
+        let status_left = self.gpu.canvas_width().saturating_sub(status_scene::WIDTH);
         self.gpu.update_rgba_layer(
             status_scene::LAYER_ID,
             LayerGeometry {
-                x: DEFAULT_REGION_WIDTH - status_scene::WIDTH,
+                x: status_left,
                 width: status_scene::WIDTH,
                 height: TOUCHBAR_HEIGHT,
                 opacity: 1.0,
@@ -1725,7 +1725,7 @@ impl State {
         update_compact: bool,
         required_items: &BTreeSet<ItemId>,
     ) -> Result<()> {
-        let layout = resolve(bar, DEFAULT_REGION_WIDTH, required_items)?;
+        let layout = resolve(bar, self.gpu.canvas_width(), required_items)?;
         let placements = layout
             .placements
             .iter()
@@ -1823,7 +1823,7 @@ impl State {
         let end = x
             .checked_add(width)
             .context("presentation region overflow")?;
-        if end > DEFAULT_REGION_WIDTH {
+        if end > self.gpu.canvas_width() {
             bail!("presentation region exceeds the Touch Bar");
         }
         let layout = resolve(bar, width, &bar_item_ids(bar))?;
@@ -1906,7 +1906,7 @@ impl State {
                         width: compact.width,
                     },
                     container_sizing,
-                    DEFAULT_REGION_WIDTH,
+                    self.gpu.canvas_width(),
                 )?;
                 role.presentation_anchor(
                     presentation.session_id,
@@ -1992,7 +1992,7 @@ impl State {
                     let required = bar_item_ids(&content);
                     self.apply_bar_with_required(&content, false, &required)?;
                 } else {
-                    self.apply_bar(&full_bar(&layout_id, DEFAULT_REGION_WIDTH), false)?;
+                    self.apply_bar(&full_bar(&layout_id, self.gpu.canvas_width()), false)?;
                 }
             }
         }
@@ -3232,9 +3232,10 @@ fn register_backdrop(
         manager.post_error(0_u32, "backdrop plugin ID is invalid");
         return;
     }
+    let canvas_width = state.gpu.canvas_width();
     let geometry = LayerGeometry {
         x: 0,
-        width: DEFAULT_REGION_WIDTH,
+        width: canvas_width,
         height: TOUCHBAR_HEIGHT,
         opacity: 1.0,
         z_index: 0,
@@ -3256,12 +3257,7 @@ fn register_backdrop(
             plugin_id: plugin_id.clone(),
             item_id: format!("backdrop:{plugin_id}"),
             layout_id: format!("backdrop:{plugin_id}"),
-            compact_spec: ItemSpec::new(
-                "backdrop",
-                DEFAULT_REGION_WIDTH,
-                DEFAULT_REGION_WIDTH,
-                DEFAULT_REGION_WIDTH,
-            ),
+            compact_spec: ItemSpec::new("backdrop", canvas_width, canvas_width, canvas_width),
             expanded_spec: None,
             role,
             layer_id,
@@ -3842,13 +3838,13 @@ fn run_swapchain_probe(gpu: &mut GpuCompositor, path: &PathBuf) -> Result<()> {
     let pixels = pixel
         .into_iter()
         .cycle()
-        .take((DEFAULT_REGION_WIDTH * TOUCHBAR_HEIGHT * 4) as usize)
+        .take((gpu.canvas_width() * TOUCHBAR_HEIGHT * 4) as usize)
         .collect::<Vec<_>>();
     gpu.update_rgba_layer(
         1,
         LayerGeometry {
             x: 0,
-            width: DEFAULT_REGION_WIDTH,
+            width: gpu.canvas_width(),
             height: TOUCHBAR_HEIGHT,
             opacity: 1.0,
             z_index: 0,
@@ -3881,7 +3877,7 @@ fn run_swapchain_probe(gpu: &mut GpuCompositor, path: &PathBuf) -> Result<()> {
     println!(
         "swapchain-probe=ok buffers={} scene={}x{} checksum={checksum:016x}",
         gpu.output_buffer_count(),
-        DEFAULT_REGION_WIDTH,
+        gpu.canvas_width(),
         TOUCHBAR_HEIGHT
     );
     Ok(())
@@ -4063,11 +4059,11 @@ fn main() -> Result<()> {
     let frame_publisher = args
         .frame_output
         .as_deref()
-        .map(|path| FramePublisher::new(path, DEFAULT_REGION_WIDTH, TOUCHBAR_HEIGHT))
+        .map(|path| FramePublisher::new(path, gpu.canvas_width(), TOUCHBAR_HEIGHT))
         .transpose()?;
     let preview_output = args
         .preview_scale
-        .map(|scale| PreviewOutput::connect(DEFAULT_REGION_WIDTH, TOUCHBAR_HEIGHT, scale))
+        .map(|scale| PreviewOutput::connect(gpu.canvas_width(), TOUCHBAR_HEIGHT, scale))
         .transpose()?;
     let dmabuf_global = create_dmabuf_global_data()?;
     let mut display = Display::<State>::new().context("create Wayland display")?;
@@ -4141,7 +4137,9 @@ fn main() -> Result<()> {
 
     println!(
         "ready socket={} region={}x{} refresh_millihz={REFRESH_MILLIHZ}",
-        args.socket, DEFAULT_REGION_WIDTH, TOUCHBAR_HEIGHT
+        args.socket,
+        state.gpu.canvas_width(),
+        TOUCHBAR_HEIGHT
     );
 
     loop {

@@ -3,7 +3,18 @@
 pub const TOUCHBAR_PROTOCOL_VERSION: u32 = 1;
 
 pub const DEFAULT_SOCKET_NAME: &str = "touchbar-0";
+
+/// Logical canvas width used before a panel is attached, and by headless,
+/// preview, and test paths that have no panel at all.
+///
+/// This is a starting value, not an invariant. A presenter that attaches a
+/// swapchain declares the real logical width, and the compositor resizes its
+/// scene to match, so a Touch Bar wider or narrower than the Apple silicon
+/// panel composes at its own size rather than being letterboxed. Read the
+/// live value from the compositor rather than assuming this constant.
 pub const DEFAULT_REGION_WIDTH: u32 = 2008;
+
+/// Logical canvas height. Fixed across every supported panel.
 pub const TOUCHBAR_HEIGHT: u32 = 60;
 pub const REFRESH_MILLIHZ: u32 = 60_000;
 
