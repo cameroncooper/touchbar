@@ -3381,6 +3381,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "touchbar-drawing-component-demo"
+version = "0.1.0"
+dependencies = [
+ "touchbar-component-sdk",
+ "touchbar-package",
+]
+
+[[package]]
 name = "touchbar-filesystem-component-demo"
 version = "0.1.0"
 dependencies = [

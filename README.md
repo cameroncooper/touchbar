@@ -38,8 +38,15 @@ workflows. `plugin test` renders every item at each responsive width, and
 `plugin replay` drives deterministic interaction scenarios with typed fixtures
 for every capability — no hardware, no network, no live services.
 
-See [Build a plugin](docs/plugin-author-context.md) and
-[the simulator](docs/design/onscreen-simulator.md).
+Plugins can draw with the GPU without leaving the sandbox — vector commands
+through Canvas2D, or a small validated WGSL body for animated effects — and
+neither needs a single capability. See
+[the drawing example](examples/drawing-component-plugin). Native plugins can
+take a raw GLES context instead, as an explicit escape hatch.
+
+See [Build a plugin](docs/plugin-author-context.md),
+[the simulator](docs/design/onscreen-simulator.md), and
+[the other examples](examples).
 
 ## Have a Touch Bar MacBook?
 

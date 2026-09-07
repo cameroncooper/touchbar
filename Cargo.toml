@@ -23,6 +23,7 @@ members = [
     "examples/broker-component-plugin",
     "examples/clipboard-component-plugin",
     "examples/desktop-action-component-plugin",
+    "examples/drawing-component-plugin",
     "examples/filesystem-component-plugin",
     "examples/http-component-plugin",
     "examples/secret-component-plugin",

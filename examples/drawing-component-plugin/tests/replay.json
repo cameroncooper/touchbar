@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "item": "combined",
+  "width": 320,
+  "appearance": { "preset": "dark", "motion": "full", "colors": {} },
+  "steps": [
+    { "kind": "snapshot", "name": "dark" },
+    { "kind": "advance", "time_ms": 2000 },
+    { "kind": "snapshot", "name": "dark-later" },
+    {
+      "kind": "appearance",
+      "preset": "light",
+      "revision": 2,
+      "colors": { "accent": "#246bfe" },
+      "motion": "full"
+    },
+    { "kind": "snapshot", "name": "light-blue-accent" },
+    { "kind": "appearance", "preset": "light", "revision": 3, "motion": "reduced" },
+    { "kind": "snapshot", "name": "reduced-motion" }
+  ]
+}

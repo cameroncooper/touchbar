@@ -1,0 +1,31 @@
+manifest_version = 1
+
+[plugin]
+name = "Drawing Component Demo"
+version = "0.1.0"
+description = "Custom GPU drawing from inside the sandbox: Canvas2D and validated effects"
+license = "MIT OR Apache-2.0"
+source = "github:cameroncooper/touchbar-drawing-component-demo"
+api = "^1.0"
+
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+
+# Note the absence of a [[permission]] section. Custom drawing needs no
+# capability at all: the component describes what to draw and the host draws
+# it. A plugin can be visually rich while remaining unable to touch the
+# filesystem, the network, or D-Bus.
+
+[[items]]
+id = "canvas"
+label = "Canvas Drawing"
+
+[[items]]
+id = "effect"
+label = "Shader Effect"
+
+[[items]]
+id = "combined"
+label = "Canvas Over Effect"
