@@ -7,4 +7,4 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 glow.workspace = true
-touchbar-client = { path = "../touchbar-client" }
+touchbar-client = { path = "../../crates/touchbar-client" }

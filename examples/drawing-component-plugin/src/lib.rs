@@ -16,7 +16,7 @@
 //! the shader recompiling.
 //!
 //! Native process plugins can still take a raw `glow::Context` through
-//! `touchbar-client`; see `crates/touchbar-gl-demo`. That path is an
+//! `touchbar-client`; see `examples/gl-native-plugin`. That path is an
 //! unrestricted escape hatch and is not what most plugins should use.
 
 use touchbar_component_sdk::kit::{

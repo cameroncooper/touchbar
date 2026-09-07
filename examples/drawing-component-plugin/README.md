@@ -59,7 +59,7 @@ touchbarctl plugin replay  --package examples/drawing-component-plugin \
 
 Native process plugins can take a real `glow::Context` through
 `touchbar-client` and submit their own GLES draw calls — see
-[`crates/touchbar-gl-demo`](../../crates/touchbar-gl-demo) for an animated
+[`examples/gl-native-plugin`](../gl-native-plugin) for an animated
 fragment shader built that way.
 
 That path is an intentionally unrestricted escape hatch: a native plugin is
