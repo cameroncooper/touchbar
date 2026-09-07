@@ -8,3 +8,9 @@ target/
 # Fuzzing corpora and crash artifacts.
 /fuzz/artifacts/
 /fuzz/corpus/
+
+# makepkg working files inside the in-tree PKGBUILDs.
+packaging/aur/*/src/
+packaging/aur/*/pkg/
+packaging/aur/*/*.tar.gz
+packaging/aur/*/*.pkg.tar.*

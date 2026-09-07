@@ -28,7 +28,7 @@ host="target/release/touchbar-plugin-host"
 
 # Responsive widths. These match the matrix `touchbarctl plugin test` renders,
 # so a documented image and a tested representation cannot drift apart.
-widths=(80 160 320 1004)
+widths=(80 160 320 1004 2008)
 
 cargo build --locked --release --quiet -p touchbar-cli -p touchbar-plugin-host
 
