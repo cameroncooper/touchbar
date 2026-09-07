@@ -18,6 +18,11 @@ touchbarctl plugin pack
 `new` produces a standalone Rust `wasm32-wasip2` component project tied to the SDK in this source
 tree. The starter contains two items and one theme-aware presentation, demonstrating
 tap-to-open, hold-slide, semantic colors, responsive sizing, and lifecycle handling.
+Component builds select cargo and rustc as one rustup-managed toolchain when
+rustup is available, even if `/usr/bin` appears first in `PATH`, and verify that
+the selected compiler actually contains the `wasm32-wasip2` standard library.
+Advanced callers may instead set both `CARGO` and `RUSTC`; setting only one is
+rejected so a mixed sysroot cannot produce a misleading missing-`std` error.
 `test` renders every declared item at 80, 160, 320, 1004, and 2008 pixels,
 plus every presentation-element min/preferred/max width, through the real component
 host. `touchbarctl plugin test --format json` returns a versioned report containing
@@ -88,7 +93,10 @@ unbounded import or allocation loop.
 
 The versioned control protocol uses a private `0600` Unix socket inside the private plugin-store
 directory. Both client and server verify peer credentials. Messages are strictly decoded and size-
-bounded. `enable`, `disable`, item changes, install, and removal ask a running daemon to reconcile;
+bounded. Linux pathname sockets are limited to 107 bytes; clients and the
+server reject an oversized control path before connecting or mutating the
+filesystem and identify a shorter `TOUCHBAR_HOME` or `--control-socket` as the
+remedy. `enable`, `disable`, item changes, install, and removal ask a running daemon to reconcile;
 the durable lock remains the source of truth when the daemon is offline.
 
 Use `TOUCHBAR_HOME` to isolate a development store. Run

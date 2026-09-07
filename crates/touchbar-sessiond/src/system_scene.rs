@@ -1,5 +1,7 @@
 use touchbar_protocol::{appearance::AppearanceSnapshot, hardware_ipc::TouchEvent};
-use touchbar_system_bar::{KeyTransition, SystemBar, SystemBarConfig, SystemBarRenderer};
+use touchbar_system_bar::{
+    KeyTransition, SystemBar, SystemBarConfig, SystemBarRenderer, SystemLayer,
+};
 
 pub const LAYER_ID: u64 = u64::MAX;
 
@@ -22,6 +24,12 @@ impl SystemScene {
     pub fn set_fn_pressed(&mut self, pressed: bool) -> (bool, Vec<KeyTransition>) {
         let previous = self.bar.active_layer();
         let transitions = self.bar.set_fn_pressed(pressed);
+        (previous != self.bar.active_layer(), transitions)
+    }
+
+    pub fn set_fn_override(&mut self, layer: Option<SystemLayer>) -> (bool, Vec<KeyTransition>) {
+        let previous = self.bar.active_layer();
+        let transitions = self.bar.set_fn_override(layer);
         (previous != self.bar.active_layer(), transitions)
     }
 

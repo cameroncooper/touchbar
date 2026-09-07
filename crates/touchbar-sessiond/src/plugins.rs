@@ -34,6 +34,7 @@ enum Launch {
         digest: String,
         asset_digests: Vec<(String, String)>,
     },
+    TrustedComponent,
     Native {
         executable: PathBuf,
     },
@@ -235,6 +236,7 @@ pub struct PluginManager {
     processes: BTreeMap<Key, Managed>,
     presentations: PresentationCatalog,
     next_policy_refresh: Instant,
+    trusted_components: bool,
 }
 
 impl PluginManager {
@@ -243,6 +245,7 @@ impl PluginManager {
         supervisor: PathBuf,
         host: PathBuf,
         wayland_display: String,
+        trusted_components: bool,
     ) -> Result<Self> {
         let mut manager = Self {
             paths,
@@ -252,6 +255,7 @@ impl PluginManager {
             processes: BTreeMap::new(),
             presentations: PresentationCatalog::default(),
             next_policy_refresh: Instant::now(),
+            trusted_components,
         };
         manager.reload()?;
         Ok(manager)
@@ -259,7 +263,7 @@ impl PluginManager {
 
     pub fn reload(&mut self) -> Result<()> {
         let store = PluginStore::open(self.paths.clone())?;
-        let (desired, presentations) = desired_state(&store)?;
+        let (desired, presentations) = desired_state(&store, self.trusted_components)?;
         let old = std::mem::take(&mut self.processes);
         for (key, mut process) in old {
             if desired
@@ -422,7 +426,10 @@ impl Drop for PluginManager {
     }
 }
 
-fn desired_state(store: &PluginStore) -> Result<(BTreeMap<Key, Desired>, PresentationCatalog)> {
+fn desired_state(
+    store: &PluginStore,
+    trusted_components: bool,
+) -> Result<(BTreeMap<Key, Desired>, PresentationCatalog)> {
     let mut output = BTreeMap::new();
     let mut presentations = PresentationCatalog::default();
     for installed in store.plugins().filter(|plugin| plugin.enabled) {
@@ -447,6 +454,9 @@ fn desired_state(store: &PluginStore) -> Result<(BTreeMap<Key, Desired>, Present
             .collect::<BTreeSet<_>>();
         presentations.add_manifest(&inspected.manifest, &enabled_items)?;
         let launch = match (&installed.runtime, &inspected.manifest.runtime) {
+            (InstalledRuntime::Component, RuntimeSpec::Component { .. }) if trusted_components => {
+                Launch::TrustedComponent
+            }
             (InstalledRuntime::Component, RuntimeSpec::Component { entrypoint, .. }) => {
                 Launch::Component {
                     digest: installed
@@ -490,30 +500,31 @@ fn desired_state(store: &PluginStore) -> Result<(BTreeMap<Key, Desired>, Present
             }
             _ => bail!("installed runtime does not match package manifest"),
         };
-        let policy = matches!(installed.runtime, InstalledRuntime::Component)
-            .then(|| {
-                let registry = CapabilityRegistry::default();
-                Ok::<_, anyhow::Error>(PolicyInput {
-                    package: PackageInstance {
-                        source: installed.source.clone(),
-                        version: installed.version.clone(),
-                        digest: installed.package_digest.clone(),
-                        provenance: provenance(&installed.origin),
-                        runtime: RuntimeKind::Component,
-                    },
-                    requests: registry.normalize(&inspected.manifest).map_err(|errors| {
-                        anyhow::anyhow!(
-                            "invalid component permissions: {}",
-                            errors
-                                .into_iter()
-                                .map(|error| error.to_string())
-                                .collect::<Vec<_>>()
-                                .join("; ")
-                        )
-                    })?,
-                })
+        let policy = (!trusted_components
+            && matches!(installed.runtime, InstalledRuntime::Component))
+        .then(|| {
+            let registry = CapabilityRegistry::default();
+            Ok::<_, anyhow::Error>(PolicyInput {
+                package: PackageInstance {
+                    source: installed.source.clone(),
+                    version: installed.version.clone(),
+                    digest: installed.package_digest.clone(),
+                    provenance: provenance(&installed.origin),
+                    runtime: RuntimeKind::Component,
+                },
+                requests: registry.normalize(&inspected.manifest).map_err(|errors| {
+                    anyhow::anyhow!(
+                        "invalid component permissions: {}",
+                        errors
+                            .into_iter()
+                            .map(|error| error.to_string())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    )
+                })?,
             })
-            .transpose()?;
+        })
+        .transpose()?;
         for item in installed.items.iter().filter(|item| item.enabled) {
             let key = Key {
                 source: installed.source.to_string(),
@@ -580,6 +591,18 @@ fn start(supervisor: &Path, host: &Path, paths: &StorePaths, display: &str, proc
                 .stdin(Stdio::null())
                 .spawn()
         }
+        Launch::TrustedComponent => Command::new(host)
+            .arg(&process.desired.package)
+            .args([
+                "--live",
+                "--item",
+                &process.desired.key.item,
+                "--width",
+                &process.desired.width.to_string(),
+            ])
+            .env("WAYLAND_DISPLAY", display)
+            .stdin(Stdio::null())
+            .spawn(),
         Launch::Native { executable } => Command::new(executable)
             .args([
                 "--live",

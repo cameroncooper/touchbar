@@ -1282,3 +1282,28 @@ component on hardware.
     unknown power and use 30 Hz on battery; the effective source and cadence
     are machine-readable. Pure discovery/change tests and a fake-sysfs
     Apple-GPU integration prove both rates without touching physical hardware.
+68. ~~Add a generic, disposable physical development session for local plugin
+    items.~~ `touchbarctl plugin run` builds and validates any local package,
+    acquires a connection-scoped yield lease from the installed user session,
+    and launches the workspace `touchbar-sessiond` against an isolated store.
+    The privileged hardware service remains running and shows its fallback
+    during the gap; lease loss restores the installed compositor automatically.
+    Trusted local component hosting is the default and `--sandboxed` selects the
+    production supervisor/broker path. Authors can select an item and width or
+    add an application-class condition for a real context-driven profile. The
+    command reports ready only after a real plugin frame becomes visible, and
+    parent-death signaling plus graceful session signal handling clean up the
+    disposable compositor and its Wayland socket if the CLI is killed. A
+    physical M1 acceptance with the Controls volume item proved normal GPU
+    rendering, hard-kill cleanup, automatic installed-session restoration, and
+    an unchanged hardware-service PID throughout the handoff. The installed
+    CLI now selects the workspace's coherent release runtime set before stale
+    debug artifacts and prints every selected binary; plugin-side Wayland
+    disconnects remain contained instead of terminating that compositor.
+69. ~~Make both trusted system rows reachable above live plugin content.~~ A
+    normal Fn hold continues to show F1–F12. A short Fn tap followed by a second
+    held press within 400 ms shows the media row until release, then restores
+    the retained profile. Long first holds do not arm the gesture. The timing
+    policy lives entirely in the unprivileged session compositor; `touchbard`
+    still forwards only raw Fn state and already defaults to media when no user
+    session exists.

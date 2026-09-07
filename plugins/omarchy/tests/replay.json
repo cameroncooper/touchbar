@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "item": "screensaver",
+  "width": 2008,
+  "appearance": {
+    "preset": "dark",
+    "motion": "full",
+    "colors": {}
+  },
+  "steps": [
+    {
+      "kind": "snapshot",
+      "name": "rest"
+    },
+    {
+      "kind": "advance",
+      "time_ms": 12000
+    },
+    {
+      "kind": "snapshot",
+      "name": "light-passing"
+    },
+    {
+      "kind": "appearance",
+      "preset": "dark",
+      "revision": 2,
+      "colors": {
+        "background": "#1a1b26",
+        "accent": "#7aa2f7",
+        "foreground": "#c0caf5",
+        "muted": "#414868"
+      },
+      "motion": "full"
+    },
+    {
+      "kind": "snapshot",
+      "name": "theme-set"
+    },
+    {
+      "kind": "appearance",
+      "preset": "dark",
+      "revision": 3,
+      "motion": "reduced"
+    },
+    {
+      "kind": "snapshot",
+      "name": "reduced-motion"
+    },
+    {
+      "kind": "appearance",
+      "preset": "dark",
+      "revision": 4,
+      "motion": "full"
+    },
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "down",
+      "x": 1004,
+      "y": 30,
+      "time_ms": 12200
+    },
+    {
+      "kind": "touch",
+      "contact_id": 1,
+      "phase": "up",
+      "x": 1004,
+      "y": 30,
+      "time_ms": 12240
+    },
+    {
+      "kind": "advance",
+      "time_ms": 12440
+    },
+    {
+      "kind": "snapshot",
+      "name": "waking"
+    },
+    {
+      "kind": "advance",
+      "time_ms": 12900
+    },
+    {
+      "kind": "snapshot",
+      "name": "handed-back"
+    }
+  ]
+}

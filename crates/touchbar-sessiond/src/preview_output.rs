@@ -151,15 +151,15 @@ impl PreviewState {
         Ok(())
     }
 
-    fn queue_frame(&mut self, rgba_bottom_up: &[u8], qh: &QueueHandle<Self>) -> Result<()> {
+    fn queue_frame(&mut self, scene_rgba: &[u8], qh: &QueueHandle<Self>) -> Result<()> {
         let expected = self.width as usize * self.height as usize * 4;
-        if rgba_bottom_up.len() != expected {
+        if scene_rgba.len() != expected {
             bail!(
                 "preview frame has {} bytes; expected {expected}",
-                rgba_bottom_up.len()
+                scene_rgba.len()
             );
         }
-        self.pending_frame = Some(rgba_bottom_up.to_vec());
+        self.pending_frame = Some(scene_rgba.to_vec());
         self.submit_pending(qh);
         Ok(())
     }
@@ -180,7 +180,7 @@ impl PreviewState {
             self.pending_frame = Some(source);
             return;
         };
-        rgba_bottom_up_to_argb_top_down(
+        rgba_to_argb(
             &source,
             &mut map[start..start + frame_bytes],
             self.width,
@@ -307,9 +307,9 @@ impl PreviewOutput {
         }
     }
 
-    pub fn present(&mut self, rgba_bottom_up: &[u8]) -> Result<()> {
+    pub fn present(&mut self, scene_rgba: &[u8]) -> Result<()> {
         let qh = self.event_queue.handle();
-        self.state.queue_frame(rgba_bottom_up, &qh)?;
+        self.state.queue_frame(scene_rgba, &qh)?;
         self.event_queue
             .flush()
             .context("flush preview frame to desktop Wayland")
@@ -364,13 +364,17 @@ fn preview_touch_id(id: i32) -> Option<u32> {
     (id < TOUCH_CONTACT_NAMESPACE - 1).then_some(TOUCH_CONTACT_NAMESPACE | id)
 }
 
-fn rgba_bottom_up_to_argb_top_down(source: &[u8], target: &mut [u8], width: u32, height: u32) {
+/// The scene framebuffer is top-down: the compositor's blit chain maps
+/// framebuffer row 0 to texel row 0 at every hop, so the scene inherits the
+/// client buffer's row order rather than GL's bottom-up convention. Only the
+/// channel order changes here. (The ADP output blit's transpose-and-flip is the
+/// panel's +90-degree rotation, not an origin correction, so it is unrelated.)
+fn rgba_to_argb(source: &[u8], target: &mut [u8], width: u32, height: u32) {
     let stride = width as usize * 4;
     debug_assert_eq!(source.len(), stride * height as usize);
     debug_assert_eq!(target.len(), source.len());
     for y in 0..height as usize {
-        let source_row =
-            &source[(height as usize - 1 - y) * stride..(height as usize - y) * stride];
+        let source_row = &source[y * stride..(y + 1) * stride];
         let target_row = &mut target[y * stride..(y + 1) * stride];
         let (source_pixels, []) = source_row.as_chunks::<4>() else {
             unreachable!("RGBA rows are four-byte aligned")
@@ -685,16 +689,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn converts_bottom_up_rgba_to_top_down_wayland_argb() {
+    fn converts_top_down_rgba_to_wayland_argb_without_reordering_rows() {
         let source = [
-            1, 2, 3, 4, 5, 6, 7, 8, // GL bottom row
-            9, 10, 11, 12, 13, 14, 15, 16, // GL top row
+            1, 2, 3, 4, 5, 6, 7, 8, // top row
+            9, 10, 11, 12, 13, 14, 15, 16, // bottom row
         ];
         let mut target = [0; 16];
-        rgba_bottom_up_to_argb_top_down(&source, &mut target, 2, 2);
+        rgba_to_argb(&source, &mut target, 2, 2);
         assert_eq!(
             target,
-            [11, 10, 9, 12, 15, 14, 13, 16, 3, 2, 1, 4, 7, 6, 5, 8]
+            [3, 2, 1, 4, 7, 6, 5, 8, 11, 10, 9, 12, 15, 14, 13, 16]
         );
     }
 

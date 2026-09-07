@@ -1,0 +1,32 @@
+#!/bin/bash
+# Point the Touch Bar at the theme Omarchy just applied.
+#
+# Install with:
+#   install -Dm644 plugins/omarchy/bridge/touchbar-theme.hook \
+#     ~/.config/omarchy/hooks/theme-set.d/touchbar-theme.hook
+#
+# touchbar-sessiond reads ~/.config/touchbar/theme.toml as flat key = "value"
+# lines and polls it every 250 ms, so this lands on the strip about a quarter of
+# a second after the desktop. An Omarchy theme's colors.toml already carries
+# every key the daemon reads, which is why this is a filter rather than a
+# translation — but generating the file is still worth it over symlinking
+# colors.toml directly: motion and cadence belong to the strip, not the theme.
+set -euo pipefail
+
+source_theme="${OMARCHY_THEME_COLORS:-$HOME/.local/state/omarchy/current/theme/colors.toml}"
+target="${TOUCHBAR_THEME:-$HOME/.config/touchbar/theme.toml}"
+
+[[ -f $source_theme ]] || exit 0
+mkdir -p "$(dirname "$target")"
+
+{
+  echo "# Generated from $source_theme by the Omarchy theme-set hook."
+  grep -E '^[[:space:]]*(mode|accent|selection|muted|background|foreground|red)[[:space:]]*=' \
+    "$source_theme"
+  # The strip's own policy: full cadence on wall power, halved on battery.
+  # Physical presentation tops out near 30 Hz either way.
+  echo 'animation_hz = 60'
+  echo 'battery_animation_hz = 30'
+} > "$target.new"
+
+mv -- "$target.new" "$target"

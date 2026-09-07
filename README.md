@@ -38,6 +38,17 @@ workflows. `plugin test` renders every item at each responsive width, and
 `plugin replay` drives deterministic interaction scenarios with typed fixtures
 for every capability — no hardware, no network, no live services.
 
+On a supported MacBook, put the local package on the physical strip without
+stopping the hardware service or changing installed plugins:
+
+```bash
+touchbarctl plugin run --package . --item main --width 320
+```
+
+This launches the workspace session compositor against a disposable store and
+restores the installed user session on Ctrl-C. Add `--sandboxed` only when the
+test is specifically about production permission and broker behavior.
+
 Plugins can draw with the GPU without leaving the sandbox — vector commands
 through Canvas2D, or a small validated WGSL body for animated effects — and
 neither needs a single capability. See
@@ -70,6 +81,8 @@ touchbar-activate                          # takes over; masks tiny-dfr
 ```
 
 Check it with `touchbarctl hardware status` and `touchbarctl session status`.
+While plugin content is visible, hold Fn for F1–F12. Tap Fn and then press and
+hold it again within 400 ms to reveal the trusted media row until release.
 
 ### Rollback
 

@@ -265,6 +265,12 @@ impl GpuCompositor {
         &self.renderer_name
     }
 
+    /// The most recent composited scene as top-down RGBA.
+    ///
+    /// Row 0 is the top scanline, not GL's bottom-left origin: every blit in
+    /// this compositor maps framebuffer row 0 to texel row 0, so the scene
+    /// keeps whatever row order the client buffers arrived in. Readback
+    /// consumers must not flip.
     pub fn scene_pixels(&self) -> &[u8] {
         &self.scratch
     }
@@ -392,8 +398,9 @@ impl GpuCompositor {
             // physical_x = height - 1 - logical_y, physical_y = logical_x.
             // Transposition alone mirrors the narrow axis and makes text
             // appear upside down on the installed panel, so the vertical flip
-            // is applied for both orientations to correct GL's bottom-up
-            // origin against top-down scanout.
+            // completes the rotation. It is part of that transform and not an
+            // origin correction: the scene itself is already top-down, which
+            // is what `scene_pixels` hands to readback consumers.
             self.draw_texture_transformed(self.scene_texture, true, 1.0, transpose);
 
             // Initial cross-device synchronization is explicit and simple.

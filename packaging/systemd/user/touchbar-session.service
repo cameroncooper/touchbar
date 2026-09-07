@@ -18,9 +18,21 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=true
-RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# RestrictSUIDSGID is deliberately absent, and removing it fixed plugins not
+# loading at all on an installed system. Its seccomp filter denies openat2
+# outright: seccomp cannot dereference the `how` struct to inspect the mode, so
+# systemd blocks the syscall rather than allow an unexaminable one. The plugin
+# supervisor opens every package member with openat2 and RESOLVE_BENEATH, which
+# is what confines a package read to its own directory, so with this set the
+# supervisor dies on its first read with ENOSYS and every item restart-loops.
+#
+# The escalation this guards against is already closed by NoNewPrivileges=true
+# above, which applies to this unit's whole process tree: a setuid bit set by
+# anything under it cannot be honoured. Prefer that over weakening the path
+# confinement the supervisor depends on.
 
 [Install]
 WantedBy=graphical-session.target

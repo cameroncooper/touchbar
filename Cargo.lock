@@ -3433,6 +3433,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "touchbar-first-party-omarchy"
+version = "0.1.0"
+dependencies = [
+ "touchbar-component-sdk",
+]
+
+[[package]]
 name = "touchbar-gl-demo"
 version = "0.1.0"
 dependencies = [

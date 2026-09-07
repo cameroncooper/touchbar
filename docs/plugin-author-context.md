@@ -2,7 +2,30 @@
 
 TouchBar packs are immutable local packages. A pack may contribute multiple stable items. The default runtime is a WebAssembly component; it has no ambient operating-system access and reaches the desktop only through explicitly requested, user-approved broker capabilities.
 
+Packages do not own profiles in v1. Profiles are user/session-owned because
+they arbitrate ordering and space among unrelated packs. An application pack
+can be used contextually today by referencing its stable items from a
+`[[contribution]]` in `profiles.toml`, setting `scope = "application"`, and
+matching `application.id`; bind that contribution into a `select` or `collect`
+slot. `plugin run --when-application CLASS` creates that arrangement
+disposably for on-device testing. A future package-contribution contract should
+let a pack declare this activation recipe without granting it ownership of the
+user's profile or placement.
+
 Use theme roles from the UI protocol rather than fixed foreground/background colors. The daemon sends a fresh theme snapshot whenever the active palette changes. Layouts must render at any assigned width; use responsive variants and keep item IDs stable across releases. The canvas follows the attached panel, so never assume a particular total strip width. The component host supplies the manifest's canonical `github:owner/repository` source as the runtime plugin identity. A native runtime must pass that exact manifest source to `ClientOptions::new`; profiles identify a surface with the collision-free pair `{ plugin = "github:owner/repository", item = "local-item-id" }`.
+
+Use `touchbarctl plugin dev --package DIR --item ID` for the normal unprivileged
+desktop preview. On Touch Bar hardware, use
+`touchbarctl plugin run --package DIR --item ID --width PX`. It gives a new
+workspace `touchbar-sessiond` a connection-scoped lease while the privileged
+hardware service continues running, uses an isolated store, and restores the
+installed user session on Ctrl-C, CLI failure, or disconnect. Trusted local
+hosting is the default; add `--sandboxed` when testing production grants,
+resource confinement, or broker events. Add
+`--when-application CLASS` to test a real Hyprland focus-driven profile switch
+without changing the user's installed plugins or profile configuration. The
+target window must actually become focused: the runner checks the observed
+context transition and fails if a launcher merely creates an unfocused window.
 
 Use the bounded `Canvas2d` SDK node for custom graphs, indicators, drawings,
 and other portable GPU content. Give it a local view box and let the host scale
@@ -78,13 +101,15 @@ The development loop is:
    filesystem-read, local-service, notification, URI-open, clipboard, and secret-read fixtures exercise asynchronous state
    without contacting the desktop/network, launching a process, reading host
    files, or opening a Unix socket)
-6. Run `touchbarctl plugin dev` for the complete production-compositor desktop preview
-7. `touchbarctl plugin pack`
-8. Test the resulting `touchbar-plugin.touchbar` with
+6. Run `touchbarctl plugin dev` for the complete compositor desktop preview.
+7. On supported hardware, run `touchbarctl plugin run --item ID --width PX` for
+   an isolated workspace-session preview on the physical strip.
+8. `touchbarctl plugin pack`
+9. Test the resulting `touchbar-plugin.touchbar` with
    `touchbarctl plugin add --path touchbar-plugin.touchbar`
-9. Attach that exact asset name to a canonical `vMAJOR.MINOR.PATCH` GitHub
+10. Attach that exact asset name to a canonical `vMAJOR.MINOR.PATCH` GitHub
    Release. Users install it with `touchbarctl plugin add github:owner/repository`.
-10. Optionally run `touchbarctl plugin submit --alias ALIAS --categories a,b`
+11. Optionally run `touchbarctl plugin submit --alias ALIAS --categories a,b`
    and propose the emitted entry for the reviewed discovery catalog.
 
 Replay broker fixtures are strict expectations, not mocks with ambient

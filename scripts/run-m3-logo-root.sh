@@ -1,8 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-if [[ $EUID -ne 0 ]]; then
-    echo "run-m3-logo-root.sh must be invoked through pkexec" >&2
+invoking_uid=${PKEXEC_UID:-${SUDO_UID:-}}
+if [[ $EUID -ne 0 || ! "$invoking_uid" =~ ^[0-9]+$ ]]; then
+    echo "run-m3-logo-root.sh must be invoked through pkexec or sudo" >&2
     exit 1
 fi
 
@@ -56,8 +57,7 @@ if [[ "$action" == "--direct" ]]; then
         exit 1
     fi
     socket_owner=$(stat -c %u -- "$resolved_payload")
-    invoking_uid=${PKEXEC_UID:-}
-    if [[ -z "$invoking_uid" || "$socket_owner" != "$invoking_uid" ]]; then
+    if [[ "$socket_owner" != "$invoking_uid" ]]; then
         echo "refusing ADP output socket not owned by the invoking user" >&2
         exit 1
     fi
@@ -78,8 +78,7 @@ fi
 demo_runtime=
 service_pid=
 if [[ "$action" == "--serve-demo" || "$action" == "--restart-demo" ]]; then
-    invoking_uid=${PKEXEC_UID:-}
-    if [[ -z "$invoking_uid" || ! "$payload_path" =~ ^/run/touchbar-demo-${invoking_uid}-[0-9]+/hardware\.sock$ ]]; then
+    if [[ ! "$payload_path" =~ ^/run/touchbar-demo-${invoking_uid}-[0-9]+/hardware\.sock$ ]]; then
         echo "refusing unexpected hardware service demo socket path" >&2
         exit 1
     fi

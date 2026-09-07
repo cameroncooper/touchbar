@@ -65,7 +65,11 @@ visible while the selected user composition has no completed content, hides as
 soon as the first valid plugin frame is retained, and returns if that content
 goes away. Holding Fn cancels captured plugin gestures and temporarily places
 the trusted F1–F12 scene above the current profile; releasing Fn restores the
-same profile and retained plugin state.
+same profile and retained plugin state. To reach trusted media controls while
+plugin content is visible, tap Fn briefly and then press and hold it again
+within 400 ms. The second hold displays the media row until release. A first
+hold longer than 250 ms does not arm the gesture, avoiding accidental switches
+during ordinary function-key use.
 
 ## `touchbarctl`: one administrative interface
 
@@ -84,6 +88,15 @@ controller used by focus updates, while `session reload` reconciles both plugin
 and profile configuration. This
 lets lifecycle tests distinguish a functioning compositor/hardware handoff from
 two unrelated processes that merely happen to be running.
+
+Physical development uses a connection-scoped yield lease. The installed
+session cancels contacts and releases system keys, closes only its authenticated
+hardware channel, and suppresses reconnects while the requesting same-user
+control connection remains open. A workspace `touchbar-sessiond` can then
+attach through the ordinary hardware protocol. Closing either development
+process releases the lease; the installed session reconnects automatically.
+`touchbard`, DRM ownership, input devices, backlight policy, and the trusted
+fallback remain continuously active.
 
 ```text
 TouchBar plugins ── private Wayland ──▶ touchbar-sessiond (user)

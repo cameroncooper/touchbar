@@ -428,7 +428,10 @@ fn allowed_math(function: MathFunction) -> bool {
 
 fn audit_statements(block: &naga::Block) -> Result<()> {
     if block.len() > MAX_EFFECT_STATEMENTS {
-        bail!("effect exceeds the straight-line statement budget");
+        bail!(
+            "effect has {} straight-line statements; limit is {MAX_EFFECT_STATEMENTS}",
+            block.len()
+        );
     }
     let mut returns = 0;
     for (index, statement) in block.iter().enumerate() {

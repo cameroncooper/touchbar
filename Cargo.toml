@@ -32,6 +32,7 @@ members = [
     "plugins/hyprland",
     "plugins/capture",
     "plugins/command-deck",
+    "plugins/omarchy",
     "crates/touchbar-media-demo",
     "crates/touchbard",
 ]

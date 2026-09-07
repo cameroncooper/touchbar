@@ -9,6 +9,34 @@ Commands and paths below are historical and may predate later renames.
 
 ---
 
+## Disposable physical plugin development
+
+`touchbarctl plugin run` now gives a local package a disposable compositor
+session on the real Touch Bar without stopping or replacing the installed
+hardware service. It asks the installed user session for a connection-scoped
+yield lease, launches the workspace `touchbar-sessiond` with an isolated store,
+and waits until the selected plugin's first frame is actually visible before
+reporting readiness. Trusted local execution is the default; `--sandboxed`
+selects the production supervisor path when that is what the author needs to
+test.
+
+The physical M1 acceptance rendered the Controls volume item, restored the
+installed session after Ctrl-C, and retained the same `touchbar.service` PID.
+A second run killed the CLI with `SIGKILL`; parent-death signaling terminated
+the disposable session, its Wayland socket and lock were removed, and the
+installed session reclaimed the strip automatically. No battery or unplug test
+was performed. A later cold Omarchy run exposed stale debug-runtime selection:
+the installed release CLI had selected an older debug host that predated the
+plugin's GPU effects. Physical acceptance now verifies and reports a coherent
+workspace release session/host/supervisor set, and an independently killed
+Wayland plugin client no longer terminates the compositor.
+
+```bash
+touchbarctl plugin run --package plugins/controls --item volume --width 320
+```
+
+---
+
 
 An experimental, GPU-capable Touch Bar system for the 13-inch Apple-silicon
 MacBook Pro.

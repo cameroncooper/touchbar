@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
     io::{self, Write},
-    os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
+    os::unix::{
+        fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
+        process::CommandExt,
+    },
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     sync::atomic::{AtomicBool, Ordering},
@@ -35,6 +38,7 @@ mod github;
 
 const CORE_REPOSITORY: &str = "https://github.com/cameroncooper/touchbar";
 const CATALOG_REPOSITORY: &str = "https://github.com/cameroncooper/touchbar-plugins";
+const DEFAULT_HARDWARE_SOCKET: &str = "/run/touchbar/hardware.sock";
 const HARDWARE_RECOVERY_MARKER: &str = "/run/touchbar/recovery-fallback";
 const TOOLCHAIN_TAG: &str = "v0.1.0";
 static DEV_INTERRUPTED: AtomicBool = AtomicBool::new(false);
@@ -52,6 +56,10 @@ const USAGE: &str = r#"usage: touchbarctl plugin COMMAND [OPTIONS]
   replay --scenario FILE [--screenshots DIR] [--package DIR] [--host PATH]
   dev [--package DIR] [--item ID] [--width PX] [--scale 1|2|4]
       [--host PATH] [--supervisor PATH] [--sessiond PATH]
+  run [--package DIR] [--item ID] [--width PX]
+      [--when-application CLASS] [--sandboxed]
+      [--host PATH] [--supervisor PATH] [--sessiond PATH]
+      [--hardware-socket PATH]
   pack [--package DIR] [--output FILE]
   release-check --tag TAG [--repository OWNER/REPO] [--package DIR]
   publish --tag TAG --repository OWNER/REPO [--package DIR]
@@ -109,6 +117,7 @@ fn run() -> Result<()> {
         "test" => test(values),
         "replay" => replay(values),
         "dev" => dev(values),
+        "run" => run_on_hardware(values),
         "pack" => pack(values),
         "release-check" => release_check(values),
         "publish" => publish(values),
@@ -207,8 +216,14 @@ fn new_plugin(args: &[String]) -> Result<()> {
 fn build(args: &[String]) -> Result<()> {
     reject(args, &["--package"], 0)?;
     let root = package_root(args)?;
+    build_component(&root)
+}
+
+fn build_component(root: &Path) -> Result<()> {
     let cargo_path = root.join("Cargo.toml");
-    let status = Command::new("cargo")
+    let toolchain = ComponentToolchain::resolve(root)?;
+    let status = toolchain
+        .cargo_command()
         .args([
             "build",
             "--release",
@@ -233,7 +248,8 @@ fn build(args: &[String]) -> Result<()> {
         .and_then(toml::Value::as_str)
         .context("Cargo.toml package.name is required")?
         .replace('-', "_");
-    let metadata = Command::new("cargo")
+    let metadata = toolchain
+        .cargo_command()
         .args([
             "metadata",
             "--format-version",
@@ -264,6 +280,114 @@ fn build(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+struct ComponentToolchain {
+    cargo: PathBuf,
+    rustc: PathBuf,
+}
+
+impl ComponentToolchain {
+    fn resolve(root: &Path) -> Result<Self> {
+        match (env::var_os("CARGO"), env::var_os("RUSTC")) {
+            (Some(cargo), Some(rustc)) => {
+                let toolchain = Self {
+                    cargo: PathBuf::from(cargo),
+                    rustc: PathBuf::from(rustc),
+                };
+                toolchain.ensure_wasi_target()?;
+                return Ok(toolchain);
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                bail!("component builds require CARGO and RUSTC to be set together")
+            }
+            (None, None) => {}
+        }
+        if let Some(toolchain) = Self::from_rustup(root)? {
+            toolchain.ensure_wasi_target()?;
+            return Ok(toolchain);
+        }
+
+        let toolchain = Self {
+            cargo: PathBuf::from("cargo"),
+            rustc: PathBuf::from("rustc"),
+        };
+        toolchain.ensure_wasi_target()?;
+        Ok(toolchain)
+    }
+
+    fn from_rustup(root: &Path) -> Result<Option<Self>> {
+        let mut candidates = vec![PathBuf::from("rustup")];
+        if let Some(home) = env::var_os("HOME") {
+            let user_rustup = PathBuf::from(home).join(".cargo/bin/rustup");
+            if user_rustup.is_file() {
+                candidates.push(user_rustup);
+            }
+        }
+        for rustup in candidates {
+            let cargo = match rustup_which(&rustup, root, "cargo") {
+                Ok(path) => path,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| format!("run {}", rustup.display()));
+                }
+            };
+            let rustc = rustup_which(&rustup, root, "rustc")
+                .with_context(|| format!("select rustc through {}", rustup.display()))?;
+            return Ok(Some(Self { cargo, rustc }));
+        }
+        Ok(None)
+    }
+
+    fn ensure_wasi_target(&self) -> Result<()> {
+        let output = Command::new(&self.rustc)
+            .args(["--print", "target-libdir", "--target", "wasm32-wasip2"])
+            .output()
+            .with_context(|| format!("inspect Rust compiler {}", self.rustc.display()))?;
+        let target_libdir = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !output.status.success()
+            || target_libdir.is_empty()
+            || !Path::new(&target_libdir).is_dir()
+        {
+            bail!(
+                "Rust compiler {} does not have the wasm32-wasip2 standard library; run `rustup target add wasm32-wasip2`, or set CARGO and RUSTC to a matched toolchain",
+                self.rustc.display()
+            );
+        }
+        Ok(())
+    }
+
+    fn cargo_command(&self) -> Command {
+        let mut command = Command::new(&self.cargo);
+        // Cargo otherwise searches PATH for rustc. An Arch cargo paired with a
+        // rustup rustc (or the reverse) can silently select the wrong sysroot.
+        command.env("RUSTC", &self.rustc);
+        command
+    }
+}
+
+fn rustup_which(rustup: &Path, root: &Path, binary: &str) -> io::Result<PathBuf> {
+    let output = Command::new(rustup)
+        .args(["which", binary])
+        .current_dir(root)
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "rustup could not select {binary}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    if !path.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "rustup selected missing {binary} executable {}",
+                path.display()
+            ),
+        ));
+    }
+    Ok(path)
+}
+
 fn context(args: &[String]) -> Result<()> {
     reject(args, &["--format"], 0)?;
     match output_format(args)? {
@@ -272,7 +396,7 @@ fn context(args: &[String]) -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&json!({
                 "manifest_version": 1, "host_api": touchbar_package::SUPPORTED_HOST_API_VERSION, "component_world": touchbar_package::SUPPORTED_COMPONENT_WORLD,
-                "commands": ["new", "build", "context", "check", "test", "replay", "dev", "pack", "release-check", "publish", "add", "update", "rollback", "search", "catalog-check", "submit", "list", "inspect", "permissions", "permission", "enable", "disable", "item", "remove"],
+                "commands": ["new", "build", "context", "check", "test", "replay", "dev", "run", "pack", "release-check", "publish", "add", "update", "rollback", "search", "catalog-check", "submit", "list", "inspect", "permissions", "permission", "enable", "disable", "item", "remove"],
                 "principles": ["stable item ids", "responsive rendering through 2008 pixels", "package-local presentation bars", "presentation width matrices", "theme roles", "sealed logical assets", "semantic image tint", "stable animation ids", "host-timed animations", "bounded validated GPU effects", "brokered capabilities", "scope-checked offline broker fixtures", "headless tests"]
             }))?
         ),
@@ -621,7 +745,7 @@ fn dev(args: &[String]) -> Result<()> {
         );
     }
     install_dev_signal_handlers()?;
-    let _socket_cleanup = DevSocketCleanup(socket_path.clone());
+    let _socket_cleanup = DevSocketCleanup::new(socket_path.clone());
     let mut compositor = ChildGuard::new(
         Command::new(&sessiond)
             .args([
@@ -668,6 +792,347 @@ fn dev(args: &[String]) -> Result<()> {
     }
 }
 
+fn run_on_hardware(args: &[String]) -> Result<()> {
+    reject_with_flags(
+        args,
+        &[
+            "--package",
+            "--item",
+            "--width",
+            "--when-application",
+            "--host",
+            "--supervisor",
+            "--sessiond",
+            "--hardware-socket",
+        ],
+        &["--sandboxed"],
+        0,
+    )?;
+    let root = package_root(args)?;
+    let initial_manifest = read_manifest(&root)?;
+    if initial_manifest.items.is_empty() {
+        bail!("plugin has no items");
+    }
+    let selected = opt(args, "--item");
+    if selected.is_some_and(|selected| {
+        !initial_manifest
+            .items
+            .iter()
+            .any(|item| item.id == selected)
+    }) {
+        bail!("plugin has no item `{}`", selected.unwrap());
+    }
+    let width = opt(args, "--width")
+        .map(|width| width.parse::<u32>().context("--width must be an integer"))
+        .transpose()?;
+    if width.is_some_and(|width| !(1..=MAX_TOUCHBAR_WIDTH).contains(&width)) {
+        bail!("--width must be between 1 and {MAX_TOUCHBAR_WIDTH}");
+    }
+    let when_application = opt(args, "--when-application");
+    if when_application.is_some() && selected.is_none() {
+        bail!("--when-application requires --item");
+    }
+    if let Some(application) = when_application
+        && (application.is_empty()
+            || application.len() > 128
+            || !application
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')))
+    {
+        bail!(
+            "--when-application must be an application class using letters, digits, '.', '_', or '-'"
+        );
+    }
+    let hardware_socket =
+        PathBuf::from(opt(args, "--hardware-socket").unwrap_or(DEFAULT_HARDWARE_SOCKET));
+    if !hardware_socket.is_absolute()
+        || hardware_socket.components().any(|component| {
+            !matches!(
+                component,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        })
+    {
+        bail!("--hardware-socket must be a normalized absolute path");
+    }
+    if matches!(initial_manifest.runtime, RuntimeSpec::Component { .. })
+        && root.join("Cargo.toml").is_file()
+    {
+        build_component(&root)?;
+    }
+    inspect_package(&root)?;
+    let host = binary(
+        args,
+        "--host",
+        "TOUCHBAR_PLUGIN_HOST",
+        "touchbar-plugin-host",
+    )?;
+    let supervisor = binary(
+        args,
+        "--supervisor",
+        "TOUCHBAR_PLUGIN_SUPERVISOR",
+        "touchbar-plugin-supervisor",
+    )?;
+    let sessiond = binary(args, "--sessiond", "TOUCHBAR_SESSIOND", "touchbar-sessiond")?;
+    for (label, path) in [
+        ("component host", &host),
+        ("plugin supervisor", &supervisor),
+        ("session daemon", &sessiond),
+    ] {
+        if !path.is_file() {
+            bail!("{label} does not exist: {}", path.display());
+        }
+    }
+    println!(
+        "plugin-run-runtime sessiond={} host={} supervisor={}",
+        sessiond.display(),
+        host.display(),
+        supervisor.display()
+    );
+
+    let temporary = tempfile::tempdir().context("create isolated physical plugin store")?;
+    let paths = StorePaths::under(temporary.path().join("store"));
+    let mut store = PluginStore::open(paths.clone())?;
+    let installed = store.install_directory(&root)?;
+    store.set_enabled(&installed.source, true)?;
+    for item in &installed.items {
+        if let Some(selected) = selected {
+            store.set_item_enabled(&installed.source, &item.id, item.id == selected)?;
+        }
+        if let Some(width) = width
+            && selected.is_none_or(|selected| item.id == selected)
+        {
+            store.set_item_width(&installed.source, &item.id, width)?;
+        }
+    }
+
+    let profile_path = when_application
+        .map(|application| {
+            let selected = selected.expect("contextual run requires a selected item");
+            let path = temporary.path().join("profiles.toml");
+            write_contextual_run_profile(
+                &path,
+                &installed.source.to_string(),
+                selected,
+                &application.to_ascii_lowercase(),
+            )?;
+            Ok::<_, anyhow::Error>(path)
+        })
+        .transpose()?;
+
+    let active_paths = StorePaths::discover()?;
+    let hardware_lease = if active_paths.control.exists() {
+        let (response, lease) = touchbar_control::acquire_hardware_yield(&active_paths.control)
+            .context("ask the installed user session to yield the Touch Bar")?;
+        if !response.ok {
+            bail!(
+                "installed user session refused hardware handoff: {}",
+                response.message
+            );
+        }
+        println!("plugin-run-handoff=yielded installed-session=true");
+        Some(lease)
+    } else {
+        println!("plugin-run-handoff=available installed-session=false");
+        None
+    };
+
+    let runtime_dir = env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .context("XDG_RUNTIME_DIR is required for physical plugin runs")?;
+    let socket_name = format!("touchbar-run-{}", std::process::id());
+    let socket_path = runtime_dir.join(&socket_name);
+    if socket_path.exists() {
+        bail!(
+            "refusing to replace existing development socket {}",
+            socket_path.display()
+        );
+    }
+    install_dev_signal_handlers()?;
+    let _socket_cleanup = DevSocketCleanup::new(socket_path);
+    let mut command = Command::new(&sessiond);
+    command
+        .arg("--socket")
+        .arg(&socket_name)
+        .arg("--hardware-socket")
+        .arg(&hardware_socket)
+        .arg("--system-bar")
+        .arg("--plugin-host")
+        .arg(&host)
+        .arg("--plugin-supervisor")
+        .arg(&supervisor)
+        .env("TOUCHBAR_HOME", &paths.root);
+    if !has_flag(args, "--sandboxed") {
+        command.arg("--trusted-plugins");
+    }
+    if let Some(profile_path) = &profile_path {
+        command
+            .arg("--profiles")
+            .arg(profile_path)
+            .arg("--hyprland-context");
+    }
+    terminate_with_parent(&mut command);
+    let mut compositor =
+        ChildGuard::new(command.spawn().with_context(|| {
+            format!("launch physical development session {}", sessiond.display())
+        })?);
+    let response = wait_for_physical_run(&paths.control, compositor.child_mut())?;
+    println!(
+        "plugin-run=ready package={} items={} selected={} width={} mode={} input=physical close=ctrl-c",
+        installed.source,
+        installed.items.len(),
+        selected.unwrap_or("all"),
+        width.map_or_else(|| "manifest".to_owned(), |width| width.to_string()),
+        if has_flag(args, "--sandboxed") {
+            "sandboxed"
+        } else {
+            "trusted-local"
+        },
+    );
+    if !response.processes.is_empty() {
+        println!("plugin-run-processes={}", response.processes.len());
+    }
+
+    let run_result = loop {
+        if DEV_INTERRUPTED.load(Ordering::Relaxed) {
+            println!("plugin-run=interrupted");
+            break Ok(());
+        }
+        if let Some(status) = compositor
+            .child_mut()
+            .try_wait()
+            .context("poll physical development session")?
+        {
+            break finish_dev_process("physical development session", status);
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    drop(compositor);
+    drop(hardware_lease);
+    wait_for_installed_session_restore(&active_paths.control)?;
+    println!("plugin-run-handoff=restored");
+    run_result
+}
+
+fn terminate_with_parent(command: &mut Command) {
+    let parent = unsafe { libc::getpid() };
+    // SAFETY: only async-signal-safe libc calls run between fork and exec. The
+    // parent check closes the small race where the CLI exits before prctl.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::getppid() != parent {
+                libc::raise(libc::SIGTERM);
+            }
+            Ok(())
+        });
+    }
+}
+
+fn write_contextual_run_profile(
+    path: &Path,
+    source: &str,
+    item: &str,
+    application: &str,
+) -> Result<()> {
+    let document = format!(
+        r#"version = 1
+fallback = "default"
+
+[[contribution]]
+id = "physical-preview-item"
+scope = "application"
+when = {{ kind = "text-equals", key = "application.id", value = "{application}" }}
+items = [{{ plugin = "{source}", item = "{item}", required = true }}]
+
+[[profile]]
+id = "default"
+
+[[profile.element]]
+kind = "slot"
+id = "inactive-preview"
+policy = "collect"
+contributions = ["physical-preview-item"]
+
+[[profile]]
+id = "physical-preview"
+
+[[profile.element]]
+kind = "slot"
+id = "physical-preview"
+policy = "fixed"
+contributions = ["physical-preview-item"]
+
+[[rule]]
+profile = "physical-preview"
+priority = 1000
+when = {{ kind = "text-equals", key = "application.id", value = "{application}" }}
+"#,
+    );
+    fs::write(path, document).with_context(|| format!("write {}", path.display()))
+}
+
+fn wait_for_physical_run(control: &Path, child: &mut Child) -> Result<touchbar_control::Response> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .context("poll physical development session startup")?
+        {
+            bail!("physical development session exited during startup with {status}");
+        }
+        if control.exists()
+            && let Ok(response) = touchbar_control::call(
+                control,
+                &touchbar_control::Request::Status {
+                    version: touchbar_control::VERSION,
+                },
+            )
+            && response.ok
+            && response.runtime.hardware_connected
+            && response.runtime.user_content_visible
+            && response
+                .processes
+                .iter()
+                .any(|process| process.state == "running")
+        {
+            return Ok(response);
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "physical development session did not connect hardware and start a plugin within 15 seconds"
+            );
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn wait_for_installed_session_restore(control: &Path) -> Result<()> {
+    if !control.exists() {
+        return Ok(());
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(response) = touchbar_control::call(
+            control,
+            &touchbar_control::Request::Status {
+                version: touchbar_control::VERSION,
+            },
+        ) && response.ok
+            && response.runtime.hardware_connected
+            && !response.runtime.hardware_yielded
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!("installed user session did not reclaim the Touch Bar within 10 seconds");
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
 extern "C" fn interrupt_dev(_: libc::c_int) {
     DEV_INTERRUPTED.store(true, Ordering::Relaxed);
 }
@@ -686,12 +1151,32 @@ fn install_dev_signal_handlers() -> Result<()> {
     Ok(())
 }
 
-struct DevSocketCleanup(PathBuf);
+struct DevSocketCleanup {
+    socket: PathBuf,
+    lock: PathBuf,
+}
+
+impl DevSocketCleanup {
+    fn new(socket: PathBuf) -> Self {
+        let lock = socket.with_file_name(format!(
+            "{}.lock",
+            socket
+                .file_name()
+                .expect("development socket has a filename")
+                .to_string_lossy()
+        ));
+        Self { socket, lock }
+    }
+}
 
 impl Drop for DevSocketCleanup {
     fn drop(&mut self) {
-        if fs::symlink_metadata(&self.0).is_ok_and(|metadata| metadata.file_type().is_socket()) {
-            let _ = fs::remove_file(&self.0);
+        if fs::symlink_metadata(&self.socket).is_ok_and(|metadata| metadata.file_type().is_socket())
+        {
+            let _ = fs::remove_file(&self.socket);
+        }
+        if fs::symlink_metadata(&self.lock).is_ok_and(|metadata| metadata.is_file()) {
+            let _ = fs::remove_file(&self.lock);
         }
     }
 }
@@ -1709,7 +2194,9 @@ fn session(args: &[String]) -> Result<()> {
         println!(
             "{} hardware={} fn={} system_scene={}",
             response.message,
-            if runtime.hardware_connected {
+            if runtime.hardware_yielded {
+                "yielded"
+            } else if runtime.hardware_connected {
                 "connected"
             } else {
                 "disconnected"
@@ -2138,7 +2625,10 @@ fn binary(args: &[String], flag: &str, variable: &str, name: &str) -> Result<Pat
         return Ok(sibling);
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    for mode in ["debug", "release"] {
+    // An installed release CLI has no sibling runtime in /usr/bin. Prefer the
+    // workspace's coherent release set in that case: debug artifacts may be
+    // older and may not support a component just built by the release path.
+    for mode in ["release", "debug"] {
         let candidate = root.join("target").join(mode).join(name);
         if candidate.is_file() {
             return Ok(candidate);
@@ -2317,6 +2807,12 @@ desktop preview. Use `--item ID --width PX` for one responsive item and
 capture and presentation router, but are explicitly synthetic and cannot
 authorize activation-gated OS operations.
 
+On supported hardware, run `touchbarctl plugin run --item ID --width PX` to
+launch the workspace session compositor without stopping the hardware service
+or changing installed plugins. Ctrl-C returns the strip to the installed user
+session. This is trusted local hosting by default; add `--sandboxed` when the
+test specifically covers production permission or broker behavior.
+
 For capability-driven widgets, add exact typed D-Bus call/subscription, HTTP
 inline/stream, constrained-command, filesystem-read, framed local-service,
 notification, URI-open, clipboard, or secret-read
@@ -2428,6 +2924,19 @@ mod tests {
         assert_eq!(positional(&args, 0), Some("demo"));
         assert_eq!(positional(&args, 1), None);
         assert_eq!(opt(&args, "--format"), Some("json"));
+    }
+
+    #[test]
+    fn development_socket_cleanup_removes_wayland_socket_and_lock() {
+        let temporary = tempfile::tempdir().unwrap();
+        let socket = temporary.path().join("touchbar-run-test");
+        let lock = temporary.path().join("touchbar-run-test.lock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        fs::write(&lock, []).unwrap();
+        drop(DevSocketCleanup::new(socket.clone()));
+        assert!(!socket.exists());
+        assert!(!lock.exists());
+        drop(listener);
     }
 
     #[test]
@@ -2595,6 +3104,8 @@ mod tests {
                             message: "running".into(),
                             runtime: touchbar_control::SessionRuntimeStatus {
                                 hardware_connected: false,
+                                hardware_yielded: false,
+                                user_content_visible: false,
                                 fn_pressed: false,
                                 system_scene_visible: false,
                                 profile: touchbar_control::ProfileRuntimeStatus::default(),

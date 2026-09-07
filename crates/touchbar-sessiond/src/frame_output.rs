@@ -7,9 +7,8 @@ use std::{
 use anyhow::{Context as _, Result};
 use memmap2::{MmapMut, MmapOptions};
 use touchbar_protocol::{
-    FRAME_STREAM_ACTIVE_SLOT_OFFSET, FRAME_STREAM_FLAG_BOTTOM_UP, FRAME_STREAM_FLAGS_OFFSET,
-    FRAME_STREAM_HEADER_SIZE, FRAME_STREAM_MAGIC, FRAME_STREAM_SEQUENCE_OFFSET,
-    FRAME_STREAM_SLOT_COUNT,
+    FRAME_STREAM_ACTIVE_SLOT_OFFSET, FRAME_STREAM_FLAGS_OFFSET, FRAME_STREAM_HEADER_SIZE,
+    FRAME_STREAM_MAGIC, FRAME_STREAM_SEQUENCE_OFFSET, FRAME_STREAM_SLOT_COUNT,
 };
 
 pub struct FramePublisher {
@@ -41,8 +40,12 @@ impl FramePublisher {
         map[12..16].copy_from_slice(&height.to_le_bytes());
         map[16..20].copy_from_slice(&(stride as u32).to_le_bytes());
         map[20..24].copy_from_slice(&(FRAME_STREAM_SLOT_COUNT as u32).to_le_bytes());
+        // No flags: the composited scene is top-down. GL's bottom-up origin
+        // never enters this path, because the compositor's blit chain maps
+        // framebuffer row 0 to texel row 0 at every hop and so carries the
+        // client buffer's row order straight through the readback.
         map[FRAME_STREAM_FLAGS_OFFSET..FRAME_STREAM_FLAGS_OFFSET + 4]
-            .copy_from_slice(&FRAME_STREAM_FLAG_BOTTOM_UP.to_le_bytes());
+            .copy_from_slice(&0_u32.to_le_bytes());
 
         println!(
             "frame-output={} size={}x{} slots={FRAME_STREAM_SLOT_COUNT}",

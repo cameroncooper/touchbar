@@ -179,16 +179,21 @@ impl SystemBar {
     /// Fn is an exclusive transient layer, not a long-lived profile. Switching
     /// it cancels every active Touch Bar key before changing hit geometry.
     pub fn set_fn_pressed(&mut self, pressed: bool) -> Vec<KeyTransition> {
-        if self.fn_pressed == pressed {
+        self.set_fn_override(pressed.then(|| alternate(self.config.default_layer)))
+    }
+
+    /// Selects an explicit layer while Fn is physically held. The session
+    /// compositor uses this for gestures such as double-tap-and-hold without
+    /// moving timing or policy into the privileged hardware daemon.
+    pub fn set_fn_override(&mut self, layer: Option<SystemLayer>) -> Vec<KeyTransition> {
+        let pressed = layer.is_some();
+        let next = layer.unwrap_or(self.config.default_layer);
+        if self.fn_pressed == pressed && self.active_layer == next {
             return Vec::new();
         }
         let releases = self.cancel_all();
         self.fn_pressed = pressed;
-        self.active_layer = if pressed {
-            alternate(self.config.default_layer)
-        } else {
-            self.config.default_layer
-        };
+        self.active_layer = next;
         releases
     }
 
@@ -416,6 +421,17 @@ mod tests {
         );
         assert_eq!(bar.active_layer(), SystemLayer::Function);
         bar.set_fn_pressed(true);
+        assert_eq!(bar.active_layer(), SystemLayer::Media);
+    }
+
+    #[test]
+    fn explicit_media_override_is_still_fn_held_and_restores_default() {
+        let mut bar = SystemBar::new(SystemBarConfig::default(), 2008.0, 60.0);
+        assert!(bar.set_fn_override(Some(SystemLayer::Media)).is_empty());
+        assert!(bar.fn_pressed());
+        assert_eq!(bar.active_layer(), SystemLayer::Media);
+        assert!(bar.set_fn_override(None).is_empty());
+        assert!(!bar.fn_pressed());
         assert_eq!(bar.active_layer(), SystemLayer::Media);
     }
 

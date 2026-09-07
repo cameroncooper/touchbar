@@ -1,0 +1,27 @@
+manifest_version = 1
+
+[plugin]
+name = "Omarchy"
+version = "0.1.0"
+description = "The Omarchy pixel field re-composed for the Touch Bar"
+license = "MIT OR Apache-2.0"
+source = "github:cameroncooper/touchbar-omarchy"
+api = "^1.0"
+
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+
+# No [[permission]] section. The screensaver is drawing and nothing else: three
+# validated effects, one retained canvas, and host-timed motion. It cannot read
+# the filesystem, the network, or D-Bus, and it never learns the theme's name —
+# only the semantic roles the host resolves for it.
+
+[[items]]
+id = "screensaver"
+label = "Screensaver"
+
+[[items]]
+id = "palette"
+label = "Theme Palette"

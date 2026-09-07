@@ -353,7 +353,7 @@ fn print_package(opened: &OpenedPackage) {
     );
     println!("source: {}", opened.manifest.plugin.source);
     println!("world: {}", opened.world);
-    println!("sandboxed component: {}", opened.component.display());
+    println!("component: {}", opened.component.display());
     println!("package root: {}", opened.root.display());
     match opened.host.broker_generation() {
         Some(generation) => {

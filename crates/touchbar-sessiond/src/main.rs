@@ -77,6 +77,7 @@ use preview_output::{PreviewInput, PreviewOutput};
 use profile_watch::ProfileWatcher;
 use status_scene::StatusScene;
 use system_scene::SystemScene;
+use touchbar_system_bar::SystemLayer;
 use wake::EventSignal;
 
 const DRM_FORMAT_ARGB8888: u32 = u32::from_le_bytes(*b"AR24");
@@ -88,6 +89,9 @@ const DRM_FORMAT_MOD_APPLE_TILED_COMPRESSED: u64 = 0x0c00_0000_0000_0002;
 const MAX_PLUGIN_SURFACES: usize = 64;
 const PROFILE_RELOAD_COALESCE: Duration = Duration::from_millis(75);
 const MAX_PENDING_CONFIGURES: usize = 64;
+const FN_TAP_MAX_DURATION: Duration = Duration::from_millis(250);
+const FN_DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(400);
+static TERMINATE_SESSION: AtomicBool = AtomicBool::new(false);
 const MAX_PENDING_FRAME_CALLBACKS: usize = 8;
 const CLIENT_COMMIT_RATE: u128 = 120;
 const CLIENT_COMMIT_BURST: u128 = 8;
@@ -511,6 +515,43 @@ enum AcceptedBuffer {
     Shm,
 }
 
+#[derive(Default)]
+struct FnLayerGesture {
+    pressed_at: Option<Instant>,
+    media_armed_until: Option<Instant>,
+    media_active: bool,
+}
+
+impl FnLayerGesture {
+    fn transition(&mut self, pressed: bool, now: Instant) -> Option<SystemLayer> {
+        if pressed {
+            self.media_active = self
+                .media_armed_until
+                .take()
+                .is_some_and(|deadline| now <= deadline);
+            self.pressed_at = Some(now);
+            return Some(if self.media_active {
+                SystemLayer::Media
+            } else {
+                SystemLayer::Function
+            });
+        }
+
+        let was_quick_tap = self
+            .pressed_at
+            .take()
+            .is_some_and(|started| now.saturating_duration_since(started) <= FN_TAP_MAX_DURATION);
+        self.media_armed_until =
+            (!self.media_active && was_quick_tap).then_some(now + FN_DOUBLE_TAP_WINDOW);
+        self.media_active = false;
+        None
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
 struct State {
     started: Instant,
     clients: Vec<Arc<ClientTracker>>,
@@ -528,6 +569,7 @@ struct State {
     input_sequences: HashMap<u32, u64>,
     input_origins: HashMap<u32, touchbar_surface_v1::InputOrigin>,
     fn_pressed: bool,
+    fn_gesture: FnLayerGesture,
     active_presentation: Option<ActivePresentation>,
     presentation_catalog: plugins::PresentationCatalog,
     backdrop_surface: Option<ObjectId>,
@@ -550,6 +592,7 @@ struct State {
     preview_output: Option<PreviewOutput>,
     direct_output: Option<DirectOutput>,
     hardware_socket: Option<PathBuf>,
+    hardware_yielded: bool,
     next_hardware_reconnect: Instant,
     hardware_reconnect_failures: u64,
     system_scene: Option<SystemScene>,
@@ -619,6 +662,7 @@ impl State {
             input_sequences: HashMap::new(),
             input_origins: HashMap::new(),
             fn_pressed: false,
+            fn_gesture: FnLayerGesture::default(),
             active_presentation: None,
             presentation_catalog: plugins::PresentationCatalog::default(),
             backdrop_surface: None,
@@ -641,6 +685,7 @@ impl State {
             preview_output,
             direct_output,
             hardware_socket,
+            hardware_yielded: false,
             next_hardware_reconnect: Instant::now(),
             hardware_reconnect_failures: 0,
             system_scene,
@@ -1285,23 +1330,28 @@ impl State {
         if self.fn_pressed == pressed {
             return;
         }
+        let layer = self.fn_gesture.transition(pressed, Instant::now());
         if pressed {
             self.cancel_plugin_contacts();
         }
         self.fn_pressed = pressed;
         println!(
-            "{source}-fn={}",
-            if pressed { "pressed" } else { "released" }
+            "{source}-fn={} layer={}",
+            if pressed { "pressed" } else { "released" },
+            layer.map_or("profile", |layer| match layer {
+                SystemLayer::Media => "media",
+                SystemLayer::Function => "function",
+            })
         );
         if let Some(scene) = &mut self.system_scene {
-            let (changed, transitions) = scene.set_fn_pressed(pressed);
+            let (_, transitions) = scene.set_fn_override(layer);
             self.send_system_transitions(transitions);
-            if changed {
-                if let Err(error) = self.sync_system_scene_visibility() {
-                    eprintln!("change system Fn visibility failed: {error:#}");
-                } else if let Err(error) = self.refresh_system_scene() {
-                    eprintln!("render system Fn layer failed: {error:#}");
-                }
+            if let Err(error) = self.sync_system_scene_visibility() {
+                eprintln!("change system Fn visibility failed: {error:#}");
+            } else if self.system_scene_visible
+                && let Err(error) = self.refresh_system_scene()
+            {
+                eprintln!("render system Fn layer failed: {error:#}");
             }
         }
         if let Err(error) = self.refresh_plugin_placeholder_scene() {
@@ -1370,6 +1420,7 @@ impl State {
             scene.cancel_all();
             scene.set_fn_pressed(false);
         }
+        self.fn_gesture.reset();
         self.fn_pressed = false;
         self.direct_output = None;
         self.gpu.remove_output_swapchain();
@@ -1377,8 +1428,42 @@ impl State {
         self.scene_dirty = true;
     }
 
+    fn yield_hardware(&mut self) -> Result<()> {
+        if self.hardware_socket.is_none() {
+            bail!("this session has no hardware connection to yield");
+        }
+        self.cancel_plugin_contacts();
+        self.release_system_keys();
+        if let Some(scene) = &mut self.system_scene {
+            scene.set_fn_pressed(false);
+        }
+        self.fn_gesture.reset();
+        self.fn_pressed = false;
+        self.placeholder_contacts.clear();
+        self.direct_output = None;
+        self.gpu.remove_output_swapchain();
+        self.hardware_yielded = true;
+        self.hardware_reconnect_failures = 0;
+        self.scene_dirty = true;
+        println!("hardware-output=yielded");
+        Ok(())
+    }
+
+    fn resume_hardware(&mut self) {
+        if !self.hardware_yielded {
+            return;
+        }
+        self.hardware_yielded = false;
+        self.next_hardware_reconnect = Instant::now();
+        self.hardware_reconnect_failures = 0;
+        println!("hardware-output=yield-released");
+    }
+
     fn poll_hardware_reconnect(&mut self) {
-        if self.direct_output.is_some() || Instant::now() < self.next_hardware_reconnect {
+        if self.hardware_yielded
+            || self.direct_output.is_some()
+            || Instant::now() < self.next_hardware_reconnect
+        {
             return;
         }
         let Some(path) = self.hardware_socket.clone() else {
@@ -1518,10 +1603,11 @@ impl State {
     }
 
     fn next_hardware_reconnect_delay(&self) -> Option<Duration> {
-        (self.direct_output.is_none() && self.hardware_socket.is_some()).then(|| {
-            self.next_hardware_reconnect
-                .saturating_duration_since(Instant::now())
-        })
+        (!self.hardware_yielded && self.direct_output.is_none() && self.hardware_socket.is_some())
+            .then(|| {
+                self.next_hardware_reconnect
+                    .saturating_duration_since(Instant::now())
+            })
     }
 
     fn sync_system_scene_visibility(&mut self) -> Result<()> {
@@ -3592,6 +3678,7 @@ struct Args {
     control_socket: Option<PathBuf>,
     plugin_host: PathBuf,
     plugin_supervisor: PathBuf,
+    trusted_plugins: bool,
     system_bar: bool,
 }
 
@@ -3713,6 +3800,7 @@ fn parse_args() -> Args {
     let mut control_socket = None;
     let mut plugin_host = sibling_binary("touchbar-plugin-host");
     let mut plugin_supervisor = sibling_binary("touchbar-plugin-supervisor");
+    let mut trusted_plugins = false;
     let mut system_bar = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -3777,6 +3865,7 @@ fn parse_args() -> Args {
                 plugin_supervisor =
                     PathBuf::from(args.next().expect("--plugin-supervisor requires a path"));
             }
+            "--trusted-plugins" => trusted_plugins = true,
             "--exit-after-client" => exit_after_clients = 1,
             "--exit-after-clients" => {
                 exit_after_clients = args
@@ -3787,7 +3876,7 @@ fn parse_args() -> Args {
             }
             "--help" | "-h" => {
                 println!(
-                    "usage: touchbar-sessiond [--socket NAME] [--frame-output PATH] [--preview | --preview-scale 1|2|4] [--hardware-socket PATH | --hardware-listen PATH | --swapchain-probe PATH] [--system-bar] [--profiles FILE | --profile-demo] [--demo-touch | --demo-tap | --demo-nested] [--demo-focus | --hyprland-context] [--no-plugins] [--control-socket PATH] [--plugin-host PATH --plugin-supervisor PATH] [--exit-after-client | --exit-after-clients N]"
+                    "usage: touchbar-sessiond [--socket NAME] [--frame-output PATH] [--preview | --preview-scale 1|2|4] [--hardware-socket PATH | --hardware-listen PATH | --swapchain-probe PATH] [--system-bar] [--profiles FILE | --profile-demo] [--demo-touch | --demo-tap | --demo-nested] [--demo-focus | --hyprland-context] [--no-plugins] [--control-socket PATH] [--plugin-host PATH --plugin-supervisor PATH] [--trusted-plugins] [--exit-after-client | --exit-after-clients N]"
                 );
                 std::process::exit(0);
             }
@@ -3811,6 +3900,7 @@ fn parse_args() -> Args {
         control_socket,
         plugin_host,
         plugin_supervisor,
+        trusted_plugins,
         system_bar,
     }
 }
@@ -3996,9 +4086,57 @@ fn wait_for_work(fds: impl IntoIterator<Item = RawFd>, delay: Option<Duration>) 
             return Ok(());
         }
         let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted && TERMINATE_SESSION.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         if error.kind() != io::ErrorKind::Interrupted {
             return Err(error);
         }
+    }
+}
+
+extern "C" fn terminate_session(_: libc::c_int) {
+    TERMINATE_SESSION.store(true, Ordering::Relaxed);
+}
+
+fn install_termination_signal_handlers() -> Result<()> {
+    TERMINATE_SESSION.store(false, Ordering::Relaxed);
+    for signal in [libc::SIGINT, libc::SIGTERM] {
+        // SAFETY: the signal handler performs only one lock-free atomic store.
+        let previous =
+            unsafe { libc::signal(signal, terminate_session as *const () as libc::sighandler_t) };
+        if previous == libc::SIG_ERR {
+            return Err(io::Error::last_os_error()).context("install session signal handler");
+        }
+    }
+    Ok(())
+}
+
+fn control_lease_released(stream: &UnixStream) -> io::Result<bool> {
+    let mut byte = [0_u8; 1];
+    // SAFETY: `byte` is writable for the supplied one-byte length, the socket
+    // descriptor remains borrowed for the call, and MSG_PEEK consumes no data.
+    let result = unsafe {
+        libc::recv(
+            stream.as_raw_fd(),
+            byte.as_mut_ptr().cast(),
+            byte.len(),
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    if result == 0 {
+        return Ok(true);
+    }
+    if result > 0 {
+        // A lease is deliberately one-way after its response. Treat any extra
+        // client bytes as release instead of leaving an unbounded input queue.
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if error.kind() == io::ErrorKind::WouldBlock {
+        Ok(false)
+    } else {
+        Err(error)
     }
 }
 
@@ -4017,6 +4155,7 @@ fn advance_frame_deadline(next_frame: &mut Instant, now: Instant, frame_period: 
 
 fn main() -> Result<()> {
     let args = parse_args();
+    install_termination_signal_handlers()?;
     let plugin_paths = touchbar_plugin_store::StorePaths::discover()?;
     let (live_profiles, profile_path) = load_live_profiles(&args)?;
     let mut profile_watcher =
@@ -4052,7 +4191,13 @@ fn main() -> Result<()> {
         bail!("desktop preview and physical hardware output are mutually exclusive");
     }
     let direct_output = match (&args.hardware_socket, &args.hardware_listen) {
-        (Some(path), None) => Some(connect_hardware_output(&mut gpu, path)?),
+        (Some(path), None) => match connect_hardware_output(&mut gpu, path) {
+            Ok(output) => Some(output),
+            Err(error) => {
+                eprintln!("hardware-output=reconnect-pending attempts=0 error={error:#}");
+                None
+            }
+        },
         (None, Some(path)) => Some(accept_diagnostic_hardware(&mut gpu, path)?),
         (None, None) => None,
         (Some(_), Some(_)) => unreachable!(),
@@ -4094,6 +4239,7 @@ fn main() -> Result<()> {
                 args.plugin_supervisor.clone(),
                 args.plugin_host.clone(),
                 args.socket.clone(),
+                args.trusted_plugins,
             )
         })
         .transpose()?;
@@ -4143,9 +4289,19 @@ fn main() -> Result<()> {
         TOUCHBAR_HEIGHT
     );
 
-    loop {
+    let mut hardware_yield_lease: Option<UnixStream> = None;
+
+    while !TERMINATE_SESSION.load(Ordering::Relaxed) {
+        if let Some(stream) = &hardware_yield_lease
+            && control_lease_released(stream).context("poll hardware-yield lease")?
+        {
+            hardware_yield_lease = None;
+            state.resume_hardware();
+        }
         if let Some(control) = &control {
             for (mut stream, request) in control.poll()? {
+                let hardware_yield =
+                    matches!(&request, touchbar_control::Request::HardwareYield { .. });
                 let result = match request {
                     touchbar_control::Request::Ping { .. } => Ok("pong"),
                     touchbar_control::Request::Status { .. } => Ok("running"),
@@ -4163,6 +4319,13 @@ fn main() -> Result<()> {
                     touchbar_control::Request::ProfileAutomatic { .. } => {
                         state.use_automatic_profile()
                     }
+                    touchbar_control::Request::HardwareYield { .. } => (|| -> Result<_> {
+                        if hardware_yield_lease.is_some() {
+                            bail!("hardware is already yielded to another developer session")
+                        }
+                        state.yield_hardware()?;
+                        Ok("hardware yielded while this control connection remains open")
+                    })(),
                 };
                 let (ok, message) = match result {
                     Ok(message) => (true, message.to_owned()),
@@ -4174,6 +4337,8 @@ fn main() -> Result<()> {
                     .unwrap_or_default();
                 let runtime = touchbar_control::SessionRuntimeStatus {
                     hardware_connected: state.direct_output.is_some(),
+                    hardware_yielded: state.hardware_yielded,
+                    user_content_visible: state.has_visible_user_content(),
                     fn_pressed: state.fn_pressed,
                     system_scene_visible: state.system_scene_visible,
                     profile: state.profile_status(),
@@ -4196,6 +4361,12 @@ fn main() -> Result<()> {
                         processes,
                     },
                 )?;
+                if hardware_yield && ok {
+                    stream
+                        .set_nonblocking(true)
+                        .context("make hardware-yield lease nonblocking")?;
+                    hardware_yield_lease = Some(stream);
+                }
             }
         }
         if let Some(manager) = &mut plugin_manager {
@@ -4209,9 +4380,20 @@ fn main() -> Result<()> {
             state.clients.push(tracker);
         }
 
-        display
-            .dispatch_clients(&mut state)
-            .context("dispatch Wayland requests")?;
+        match display.dispatch_clients(&mut state) {
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::BrokenPipe
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                eprintln!("wayland-client=disconnected error={error}");
+            }
+            Err(error) => return Err(error).context("dispatch Wayland requests"),
+        }
 
         let missing_item = state
             .live_profiles
@@ -4372,6 +4554,9 @@ fn main() -> Result<()> {
         if let Some(control) = &control {
             wait_fds.push(control.as_fd().as_raw_fd());
         }
+        if let Some(lease) = &hardware_yield_lease {
+            wait_fds.push(lease.as_raw_fd());
+        }
         if let Some(output) = &state.direct_output {
             wait_fds.push(output.notification_fd());
         }
@@ -4398,6 +4583,61 @@ mod session_permission_tests {
     use std::{fs, os::unix::fs::PermissionsExt};
 
     #[test]
+    fn fn_double_tap_and_hold_selects_media_until_release() {
+        let started = Instant::now();
+        let mut gesture = FnLayerGesture::default();
+        assert_eq!(
+            gesture.transition(true, started),
+            Some(SystemLayer::Function)
+        );
+        assert_eq!(
+            gesture.transition(false, started + Duration::from_millis(100)),
+            None
+        );
+        assert_eq!(
+            gesture.transition(true, started + Duration::from_millis(300)),
+            Some(SystemLayer::Media)
+        );
+        assert_eq!(
+            gesture.transition(false, started + Duration::from_millis(900)),
+            None
+        );
+        assert_eq!(
+            gesture.transition(true, started + Duration::from_millis(950)),
+            Some(SystemLayer::Function)
+        );
+    }
+
+    #[test]
+    fn long_or_expired_fn_taps_do_not_arm_media() {
+        let started = Instant::now();
+        let mut gesture = FnLayerGesture::default();
+        gesture.transition(true, started);
+        gesture.transition(
+            false,
+            started + FN_TAP_MAX_DURATION + Duration::from_millis(1),
+        );
+        assert_eq!(
+            gesture.transition(true, started + Duration::from_millis(300)),
+            Some(SystemLayer::Function)
+        );
+
+        gesture.reset();
+        gesture.transition(true, started);
+        gesture.transition(false, started + Duration::from_millis(50));
+        assert_eq!(
+            gesture.transition(
+                true,
+                started
+                    + Duration::from_millis(50)
+                    + FN_DOUBLE_TAP_WINDOW
+                    + Duration::from_millis(1),
+            ),
+            Some(SystemLayer::Function)
+        );
+    }
+
+    #[test]
     fn client_commit_budget_allows_60_hz_rendering_indefinitely() {
         let started = Instant::now();
         let mut budget = CommitBudget::new(started);
@@ -4405,6 +4645,19 @@ mod session_permission_tests {
             let now = started + Duration::from_nanos(16_666_667 * frame);
             assert_eq!(budget.admit(now), CommitAdmission::Accept);
         }
+    }
+
+    #[test]
+    fn hardware_yield_lease_detects_drop_and_rejects_extra_bytes() {
+        let (server, mut client) = UnixStream::pair().unwrap();
+        assert!(!control_lease_released(&server).unwrap());
+        client.write_all(b"x").unwrap();
+        assert!(control_lease_released(&server).unwrap());
+
+        let (server, client) = UnixStream::pair().unwrap();
+        assert!(!control_lease_released(&server).unwrap());
+        drop(client);
+        assert!(control_lease_released(&server).unwrap());
     }
 
     #[test]

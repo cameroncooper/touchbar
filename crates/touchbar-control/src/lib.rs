@@ -5,6 +5,7 @@ use std::{
     io::{Read, Write},
     os::fd::{AsFd, BorrowedFd},
     os::unix::{
+        ffi::OsStrExt,
         fs::{FileTypeExt, PermissionsExt},
         net::{UnixListener, UnixStream},
     },
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize};
 pub const VERSION: u32 = 1;
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 const IO_TIMEOUT: Duration = Duration::from_millis(100);
+const UNIX_SOCKET_PATH_MAX_BYTES: usize = 107;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "kebab-case", deny_unknown_fields)]
@@ -27,6 +29,7 @@ pub enum Request {
     Status { version: u32 },
     ProfileSelect { version: u32, profile: String },
     ProfileAutomatic { version: u32 },
+    HardwareYield { version: u32 },
 }
 
 impl Request {
@@ -36,7 +39,8 @@ impl Request {
             | Self::Reload { version }
             | Self::Status { version }
             | Self::ProfileSelect { version, .. }
-            | Self::ProfileAutomatic { version } => *version,
+            | Self::ProfileAutomatic { version }
+            | Self::HardwareYield { version } => *version,
         }
     }
 }
@@ -56,12 +60,34 @@ pub struct ProcessStatus {
 #[serde(deny_unknown_fields)]
 pub struct SessionRuntimeStatus {
     pub hardware_connected: bool,
+    pub hardware_yielded: bool,
+    pub user_content_visible: bool,
     pub fn_pressed: bool,
     pub system_scene_visible: bool,
     pub profile: ProfileRuntimeStatus,
     pub plugin_placeholder: Option<PluginPlaceholderStatus>,
     pub power_source: PowerSourceStatus,
     pub animation_frame_rate_hz: u32,
+}
+
+/// A connection-scoped request for the normal user session to stop competing
+/// for the hardware socket. Dropping this value releases the lease.
+pub struct HardwareYieldLease {
+    _stream: UnixStream,
+}
+
+pub fn acquire_hardware_yield(path: impl AsRef<Path>) -> Result<(Response, HardwareYieldLease)> {
+    validate_control_socket_path(path.as_ref())?;
+    let mut stream = UnixStream::connect(path.as_ref())
+        .with_context(|| format!("connect to {}", path.as_ref().display()))?;
+    stream.set_read_timeout(Some(IO_TIMEOUT))?;
+    stream.set_write_timeout(Some(IO_TIMEOUT))?;
+    if peer_uid(&stream)? != unsafe { libc::geteuid() } {
+        bail!("control server uid is not authorized")
+    }
+    write_json(&mut stream, &Request::HardwareYield { version: VERSION })?;
+    let response = read_json(&mut stream)?;
+    Ok((response, HardwareYieldLease { _stream: stream }))
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -110,6 +136,7 @@ pub struct Server {
 impl Server {
     pub fn bind(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
+        validate_control_socket_path(path)?;
         let parent = path.parent().context("control socket needs a parent")?;
         ensure_private_directory(parent)?;
         if let Ok(metadata) = fs::symlink_metadata(path) {
@@ -164,6 +191,8 @@ impl Server {
                         message: "peer uid is not authorized".into(),
                         runtime: SessionRuntimeStatus {
                             hardware_connected: false,
+                            hardware_yielded: false,
+                            user_content_visible: false,
                             fn_pressed: false,
                             system_scene_visible: false,
                             profile: ProfileRuntimeStatus::default(),
@@ -187,6 +216,8 @@ impl Server {
                             message: error.to_string(),
                             runtime: SessionRuntimeStatus {
                                 hardware_connected: false,
+                                hardware_yielded: false,
+                                user_content_visible: false,
                                 fn_pressed: false,
                                 system_scene_visible: false,
                                 profile: ProfileRuntimeStatus::default(),
@@ -217,6 +248,7 @@ impl Drop for Server {
 }
 
 pub fn call(path: impl AsRef<Path>, request: &Request) -> Result<Response> {
+    validate_control_socket_path(path.as_ref())?;
     let mut stream = UnixStream::connect(path.as_ref())
         .with_context(|| format!("connect to {}", path.as_ref().display()))?;
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
@@ -289,6 +321,20 @@ fn peer_uid(stream: &UnixStream) -> Result<u32> {
     Ok(credentials.uid)
 }
 
+fn validate_control_socket_path(path: &Path) -> Result<()> {
+    let length = path.as_os_str().as_bytes().len();
+    if length > UNIX_SOCKET_PATH_MAX_BYTES {
+        bail!(
+            "control socket path is {length} bytes, but Linux Unix socket paths may be at most {UNIX_SOCKET_PATH_MAX_BYTES} bytes: {}; choose a shorter TOUCHBAR_HOME or --control-socket path",
+            path.display()
+        );
+    }
+    if path.as_os_str().as_bytes().contains(&0) {
+        bail!("control socket path contains a null byte")
+    }
+    Ok(())
+}
+
 fn ensure_private_directory(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(_) => {}
@@ -312,7 +358,7 @@ fn ensure_private_directory(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
+    use std::{sync::mpsc, thread};
 
     #[test]
     fn same_user_round_trip_is_versioned() {
@@ -335,6 +381,8 @@ mod tests {
                         message: "pong".into(),
                         runtime: SessionRuntimeStatus {
                             hardware_connected: false,
+                            hardware_yielded: false,
+                            user_content_visible: false,
                             fn_pressed: false,
                             system_scene_visible: false,
                             profile: ProfileRuntimeStatus::default(),
@@ -354,6 +402,72 @@ mod tests {
     }
 
     #[test]
+    fn hardware_yield_lives_until_the_client_drops_its_connection() {
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.path().join("control.sock");
+        let server = Server::bind(&path).unwrap();
+        let client_path = path.clone();
+        let (acquired_tx, acquired_rx) = mpsc::sync_channel(0);
+        let (release_tx, release_rx) = mpsc::sync_channel(0);
+        let client = thread::spawn(move || {
+            let (response, lease) = acquire_hardware_yield(client_path).unwrap();
+            assert!(response.ok);
+            acquired_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            drop(lease);
+        });
+        let mut lease_stream = loop {
+            if let Some((mut stream, request)) = server.poll().unwrap().into_iter().next() {
+                assert_eq!(request, Request::HardwareYield { version: VERSION });
+                write_response(
+                    &mut stream,
+                    &Response {
+                        version: VERSION,
+                        ok: true,
+                        message: "hardware yielded".into(),
+                        runtime: SessionRuntimeStatus {
+                            hardware_connected: false,
+                            hardware_yielded: true,
+                            user_content_visible: false,
+                            fn_pressed: false,
+                            system_scene_visible: false,
+                            profile: ProfileRuntimeStatus::default(),
+                            plugin_placeholder: None,
+                            power_source: PowerSourceStatus::Unknown,
+                            animation_frame_rate_hz: 60,
+                        },
+                        processes: Vec::new(),
+                    },
+                )
+                .unwrap();
+                stream.set_nonblocking(true).unwrap();
+                break stream;
+            }
+            thread::yield_now();
+        };
+        acquired_rx.recv().unwrap();
+        let mut byte = [0_u8; 1];
+        assert_eq!(
+            lease_stream.read(&mut byte).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        release_tx.send(()).unwrap();
+        client.join().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            match lease_stream.read(&mut byte) {
+                Ok(0) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(std::time::Instant::now() < deadline);
+                    thread::yield_now();
+                }
+                other => panic!("unexpected lease read result: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn fresh_v1_response_requires_explicit_runtime_state() {
         let missing_runtime = br#"{
             "version": 1,
@@ -369,6 +483,8 @@ mod tests {
             message: "running".into(),
             runtime: SessionRuntimeStatus {
                 hardware_connected: true,
+                hardware_yielded: false,
+                user_content_visible: true,
                 fn_pressed: false,
                 system_scene_visible: true,
                 profile: ProfileRuntimeStatus::default(),
@@ -407,5 +523,16 @@ mod tests {
         let link = root.path().join("link");
         symlink(&real, &link).unwrap();
         assert!(Server::bind(link.join("control.sock")).is_err());
+    }
+
+    #[test]
+    fn oversized_socket_path_has_an_actionable_error_before_bind() {
+        let path = PathBuf::from(format!("/tmp/{}/control.sock", "deep".repeat(30)));
+        let error = match Server::bind(&path) {
+            Ok(_) => panic!("oversized socket path unexpectedly bound"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("107 bytes"));
+        assert!(error.contains("shorter TOUCHBAR_HOME"));
     }
 }

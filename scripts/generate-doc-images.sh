@@ -44,7 +44,7 @@ scenario_dir=$(mktemp -d)
 trap 'rm -rf -- "$scenario_dir"' EXIT INT TERM
 
 rendered=0
-for pack in controls media hyprland capture command-deck; do
+for pack in controls media hyprland capture command-deck omarchy; do
     manifest="plugins/$pack/touchbar-plugin.toml"
     [[ -f "$manifest" ]] || { echo "missing $manifest" >&2; exit 1; }
 
