@@ -48,6 +48,14 @@ pub struct InstalledItem {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct InstalledProfile {
+    pub id: String,
+    pub label: String,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InstalledPlugin {
     pub source: GithubSource,
     pub version: Version,
@@ -57,6 +65,8 @@ pub struct InstalledPlugin {
     pub runtime: InstalledRuntime,
     pub origin: InstalledOrigin,
     pub items: Vec<InstalledItem>,
+    #[serde(default)]
+    pub profiles: Vec<InstalledProfile>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -316,6 +326,15 @@ impl PluginStore {
                     .collect::<BTreeMap<_, _>>()
             })
             .unwrap_or_default();
+        let previous_profiles = previous
+            .map(|plugin| {
+                plugin
+                    .profiles
+                    .iter()
+                    .map(|profile| (profile.id.as_str(), profile.enabled))
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
         let runtime = match inspection.manifest.runtime {
             RuntimeSpec::Component { .. } => InstalledRuntime::Component,
             RuntimeSpec::Native { .. } => InstalledRuntime::Native,
@@ -346,13 +365,26 @@ impl PluginStore {
                     let (enabled, width) = previous_items
                         .get(item.id.as_str())
                         .copied()
-                        .unwrap_or((true, 160));
+                        .unwrap_or((true, item.default_width));
                     InstalledItem {
                         id: item.id,
                         label: item.label,
                         width,
                         enabled,
                     }
+                })
+                .collect(),
+            profiles: inspection
+                .manifest
+                .profiles
+                .into_iter()
+                .map(|profile| InstalledProfile {
+                    enabled: previous_profiles
+                        .get(profile.id.as_str())
+                        .copied()
+                        .unwrap_or(profile.enabled_by_default),
+                    id: profile.id,
+                    label: profile.label,
                 })
                 .collect(),
         };
@@ -484,6 +516,25 @@ impl PluginStore {
             .find(|item| item.id == item_id)
             .with_context(|| format!("plugin {source} has no item {item_id}"))?;
         item.width = width;
+        self.save()
+    }
+
+    pub fn set_profile_enabled(
+        &mut self,
+        source: &GithubSource,
+        profile_id: &str,
+        enabled: bool,
+    ) -> Result<()> {
+        let plugin = self
+            .plugins
+            .get_mut(source)
+            .with_context(|| format!("plugin {source} is not installed"))?;
+        let profile = plugin
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == profile_id)
+            .with_context(|| format!("plugin {source} has no profile {profile_id}"))?;
+        profile.enabled = enabled;
         self.save()
     }
 
@@ -916,6 +967,15 @@ fn validate_installed(plugin: &InstalledPlugin) -> Result<()> {
             bail!("installed plugin item state is invalid");
         }
     }
+    let mut profile_ids = BTreeSet::new();
+    for profile in &plugin.profiles {
+        if profile.id.is_empty()
+            || profile.label.trim().is_empty()
+            || !profile_ids.insert(&profile.id)
+        {
+            bail!("installed plugin profile state is invalid");
+        }
+    }
     if plugin.artifacts.is_empty() {
         bail!("installed plugin has no artifact digests");
     }
@@ -1098,6 +1158,7 @@ pub fn sdk_context_markdown() -> String {
             "- UI: retained, semantic, theme-token based; never hard-code a background-dependent foreground\n",
             "- Assets: declare bounded PNG or symbolic SVG files under `assets/`; render only by logical ID and use semantic mask/multiply tint\n",
             "- Presentations: declare package-local bars with container and per-item sizing; request them from input callbacks and handle compositor lifecycle events\n",
+            "- Automatic profiles: declare package-local `[[profile]]` entries with exact lowercase `applications` and/or `activities`; use `show_in_default_profile = false` for contextual-only items; user rules retain precedence\n",
             "- Packages: stable item IDs, normalized relative artifact paths, no symlinks\n",
             "- Test widths: 80, 160, 320, 1004, and {MAX_TOUCHBAR_WIDTH} pixels at 60 pixels high plus every presentation width\n",
             "- Deterministic interaction: `touchbarctl plugin replay --scenario tests/interaction.json`; add `--screenshots DIR` for named GPU PNGs; use exact scope-checked D-Bus, HTTP, command, filesystem-read, local-service, notification, URI-open, clipboard, and secret-read fixtures for offline integration state; commit synthetic secret values only\n",
@@ -1198,11 +1259,30 @@ label = "Test"
     fn install_is_content_addressed_and_state_round_trips() {
         let source = tempfile::tempdir().unwrap();
         package(source.path());
+        let manifest_path = source.path().join(MANIFEST_FILE_NAME);
+        let manifest = fs::read_to_string(&manifest_path).unwrap();
+        fs::write(
+            &manifest_path,
+            format!(
+                r#"{manifest}
+default_width = 2008
+
+[[profile]]
+id = "focused"
+label = "Focused"
+items = ["test"]
+applications = ["test-app"]
+"#
+            ),
+        )
+        .unwrap();
         let home = tempfile::tempdir().unwrap();
         let paths = StorePaths::under(home.path().join("store"));
         let mut store = PluginStore::open(paths.clone()).unwrap();
         let installed = store.install_directory(source.path()).unwrap();
         assert!(!installed.enabled);
+        assert_eq!(installed.items[0].width, 2008);
+        assert!(installed.profiles[0].enabled);
         assert!(store.package_path(&installed).unwrap().is_dir());
         store.set_enabled(&installed.source, true).unwrap();
         store
@@ -1211,6 +1291,9 @@ label = "Test"
         store
             .set_item_enabled(&installed.source, "test", false)
             .unwrap();
+        store
+            .set_profile_enabled(&installed.source, "focused", false)
+            .unwrap();
         store.install_directory(source.path()).unwrap();
         drop(store);
         let store = PluginStore::open(paths).unwrap();
@@ -1218,6 +1301,7 @@ label = "Test"
         assert!(loaded.enabled);
         assert_eq!(loaded.items[0].width, 240);
         assert!(!loaded.items[0].enabled);
+        assert!(!loaded.profiles[0].enabled);
     }
 
     #[test]

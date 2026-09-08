@@ -51,6 +51,7 @@ touchbarctl plugin add --path ./touchbar-plugin.touchbar
 touchbarctl plugin inspect github:me/my-pack
 touchbarctl plugin enable github:me/my-pack
 touchbarctl plugin item github:me/my-pack main width 240
+touchbarctl plugin profile github:me/my-pack firefox disable
 touchbarctl plugin list
 touchbarctl session status
 touchbarctl plugin disable github:me/my-pack
@@ -59,8 +60,9 @@ touchbarctl plugin remove github:me/my-pack
 
 Install is disabled by default. Packages are copied into an immutable content-addressed directory;
 the installer-owned lock stores the canonical source, version, origin, package and artifact digests,
-enabled state, enabled items, and item widths. Reinstalling the same source preserves matching item
-choices. Local packages are explicitly recorded as `local-development`; they cannot claim release
+enabled state, enabled items, item widths, and package-profile choices. Reinstalling the same source
+preserves matching item and profile choices; newly declared profiles follow their manifest default.
+Local packages are explicitly recorded as `local-development`; they cannot claim release
 provenance in their manifest.
 Only manifest-selected artifacts and documentation/assets enter the package. Symlinks, hard links,
 special files, traversal, duplicate archive paths, oversized entries, and trailing archive data are
@@ -72,6 +74,13 @@ rejected.
 installed snapshot against the lock before every launch. This process-per-item choice matches the
 current Wayland client, which exposes one surface per live host; it is an implementation detail and
 does not change the pack-level manifest or installation model.
+
+Enabled package-owned profiles are merged with the optional user profile
+document in memory. They use the existing focus/context composition controller,
+so application handoff is seamless and has no lease or auxiliary-session
+lifecycle. Exact Hyprland `openlayer`/`closelayer` namespaces are exposed as
+reference-counted boolean `activity.NAME` facts for transient pickers and
+launchers.
 
 The daemon restarts failed processes with bounded exponential backoff and stops a crash loop after
 eight attempts until an explicit reload. Native packs remain an intentionally unrestricted escape

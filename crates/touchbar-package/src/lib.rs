@@ -36,6 +36,10 @@ pub const MAX_ASSET_HEIGHT: u32 = 240;
 pub const MAX_ASSET_PIXELS: u64 = 2 * 1024 * 1024;
 pub const MAX_PRESENTATION_BARS: usize = 64;
 pub const MAX_PRESENTATION_BAR_ELEMENTS: usize = 64;
+pub const MAX_AUTOMATIC_PROFILES: usize = 64;
+pub const MAX_AUTOMATIC_PROFILE_ITEMS: usize = 64;
+pub const MAX_AUTOMATIC_PROFILE_CONTEXTS: usize = 64;
+pub const MAX_LOCAL_ID_BYTES: usize = 64;
 /// Groups are deliberately shallow: the compositor can resolve their complete
 /// geometry without turning an untrusted manifest into an unbounded tree walk.
 pub const MAX_PRESENTATION_GROUP_DEPTH: usize = 8;
@@ -52,6 +56,8 @@ pub struct PluginManifest {
     pub items: Vec<ItemContribution>,
     #[serde(default, rename = "bar")]
     pub bars: Vec<PresentationBar>,
+    #[serde(default, rename = "profile")]
+    pub profiles: Vec<AutomaticProfile>,
     #[serde(default, rename = "asset")]
     pub assets: Vec<AssetDefinition>,
     #[serde(default, rename = "permission")]
@@ -97,6 +103,88 @@ impl PluginManifest {
             if !item_ids.insert(&item.id) {
                 issues.push(ValidationIssue::new(field, "duplicate item id"));
             }
+            if !(1..=MAX_TOUCHBAR_WIDTH).contains(&item.default_width) {
+                issues.push(ValidationIssue::new(
+                    format!("items[{index}].default_width"),
+                    format!("must be between 1 and {MAX_TOUCHBAR_WIDTH}"),
+                ));
+            }
+        }
+
+        if self.profiles.len() > MAX_AUTOMATIC_PROFILES {
+            issues.push(ValidationIssue::new(
+                "profile",
+                format!(
+                    "a package may declare at most {MAX_AUTOMATIC_PROFILES} automatic profiles"
+                ),
+            ));
+        }
+        let mut profile_ids = BTreeSet::new();
+        for (index, profile) in self.profiles.iter().enumerate() {
+            let prefix = format!("profile[{index}]");
+            validate_kebab_id(&mut issues, &format!("{prefix}.id"), &profile.id);
+            validate_nonempty(&mut issues, &format!("{prefix}.label"), &profile.label);
+            if !profile_ids.insert(&profile.id) {
+                issues.push(ValidationIssue::new(
+                    format!("{prefix}.id"),
+                    "duplicate automatic profile id",
+                ));
+            }
+            if profile.items.is_empty() || profile.items.len() > MAX_AUTOMATIC_PROFILE_ITEMS {
+                issues.push(ValidationIssue::new(
+                    format!("{prefix}.items"),
+                    format!(
+                        "must contain 1..={MAX_AUTOMATIC_PROFILE_ITEMS} package-local item IDs"
+                    ),
+                ));
+            }
+            let mut profile_items = BTreeSet::new();
+            for (item_index, item) in profile.items.iter().enumerate() {
+                validate_kebab_id(&mut issues, &format!("{prefix}.items[{item_index}]"), item);
+                if !item_ids.contains(item) {
+                    issues.push(ValidationIssue::new(
+                        format!("{prefix}.items[{item_index}]"),
+                        format!("references unknown package item `{item}`"),
+                    ));
+                }
+                if !profile_items.insert(item) {
+                    issues.push(ValidationIssue::new(
+                        format!("{prefix}.items[{item_index}]"),
+                        format!("repeats package item `{item}`"),
+                    ));
+                }
+            }
+            if let Some(principal) = &profile.principal_item {
+                validate_kebab_id(&mut issues, &format!("{prefix}.principal_item"), principal);
+                if !profile_items.contains(principal) {
+                    issues.push(ValidationIssue::new(
+                        format!("{prefix}.principal_item"),
+                        "must reference an item in this automatic profile",
+                    ));
+                }
+            }
+            let context_count = profile
+                .applications
+                .len()
+                .saturating_add(profile.activities.len());
+            if context_count == 0 || context_count > MAX_AUTOMATIC_PROFILE_CONTEXTS {
+                issues.push(ValidationIssue::new(
+                    format!("{prefix}.applications"),
+                    format!(
+                        "applications and activities must contain 1..={MAX_AUTOMATIC_PROFILE_CONTEXTS} exact identities in total"
+                    ),
+                ));
+            }
+            validate_context_identities(
+                &mut issues,
+                &format!("{prefix}.applications"),
+                &profile.applications,
+            );
+            validate_context_identities(
+                &mut issues,
+                &format!("{prefix}.activities"),
+                &profile.activities,
+            );
         }
 
         if self.bars.len() > MAX_PRESENTATION_BARS {
@@ -507,10 +595,44 @@ pub struct NativeTarget {
 pub struct ItemContribution {
     pub id: String,
     pub label: String,
+    #[serde(default = "default_item_width")]
+    pub default_width: u32,
+    #[serde(default = "default_true")]
+    pub show_in_default_profile: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expanded_bar: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub press_and_hold_bar: Option<String>,
+}
+
+fn default_item_width() -> u32 {
+    160
+}
+
+/// A package-owned profile which becomes eligible from exact desktop context.
+///
+/// Automatic profiles are intentionally narrower than user profile documents:
+/// they may arrange only items from their own package, and activation is an
+/// exact application or foreground layer identity. The host evaluates these
+/// declarations; plugin code never receives the focused application.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutomaticProfile {
+    pub id: String,
+    pub label: String,
+    pub items: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_item: Option<String>,
+    #[serde(default)]
+    pub applications: Vec<String>,
+    #[serde(default)]
+    pub activities: Vec<String>,
+    #[serde(default = "default_true")]
+    pub enabled_by_default: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// One package-owned ordered bar used as presentation content. References are
@@ -987,8 +1109,37 @@ fn validate_nonempty(issues: &mut Vec<ValidationIssue>, field: &str, value: &str
     }
 }
 
+fn validate_context_identities(issues: &mut Vec<ValidationIssue>, field: &str, values: &[String]) {
+    let mut unique = BTreeSet::new();
+    for (index, value) in values.iter().enumerate() {
+        let valid = !value.is_empty()
+            // `activity.` is prepended by the compositor and profile context
+            // keys are bounded to 128 bytes.
+            && value.len() <= 112
+            && value == value.trim()
+            && value.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'-' | b'_' | b'.' | b':')
+            });
+        if !valid {
+            issues.push(ValidationIssue::new(
+                format!("{field}[{index}]"),
+                "must be an exact lowercase application or activity identity",
+            ));
+        }
+        if !unique.insert(value) {
+            issues.push(ValidationIssue::new(
+                format!("{field}[{index}]"),
+                format!("repeats context identity `{value}`"),
+            ));
+        }
+    }
+}
+
 fn validate_kebab_id(issues: &mut Vec<ValidationIssue>, field: &str, value: &str) {
     if value.is_empty()
+        || value.len() > MAX_LOCAL_ID_BYTES
         || value.starts_with('-')
         || value.ends_with('-')
         || value.contains("--")
@@ -999,7 +1150,9 @@ fn validate_kebab_id(issues: &mut Vec<ValidationIssue>, field: &str, value: &str
     {
         issues.push(ValidationIssue::new(
             field,
-            "must be a lowercase kebab-case identifier beginning with a letter",
+            format!(
+                "must be a lowercase kebab-case identifier beginning with a letter and at most {MAX_LOCAL_ID_BYTES} bytes"
+            ),
         ));
     }
 }
@@ -1220,6 +1373,65 @@ mod tests {
     }
 
     #[test]
+    fn automatic_profiles_are_exact_package_local_declarations() {
+        let source = format!(
+            "{COMPONENT}\n\n{}",
+            r#"[[profile]]
+id = "firefox"
+label = "Firefox"
+items = ["now-playing", "media-timeline"]
+principal_item = "media-timeline"
+applications = ["firefox", "org.mozilla.firefox"]
+activities = ["omarchy-image-selector"]
+"#
+        );
+        let manifest = PluginManifest::from_toml(&source).unwrap();
+        assert_eq!(manifest.items[0].default_width, 160);
+        assert_eq!(manifest.profiles.len(), 1);
+        assert!(manifest.profiles[0].enabled_by_default);
+        assert_eq!(manifest.profiles[0].applications[0], "firefox");
+    }
+
+    #[test]
+    fn automatic_profiles_reject_ambiguous_or_foreign_content() {
+        let source = format!(
+            "{COMPONENT}\n\n{}",
+            r#"[[profile]]
+id = "firefox"
+label = "Firefox"
+items = ["missing", "missing"]
+principal_item = "now-playing"
+applications = ["Firefox", "Firefox"]
+"#
+        );
+        let error = PluginManifest::from_toml(&source).unwrap_err().to_string();
+        for expected in [
+            "references unknown package item `missing`",
+            "repeats package item `missing`",
+            "must reference an item in this automatic profile",
+            "must be an exact lowercase application or activity identity",
+            "repeats context identity `Firefox`",
+        ] {
+            assert!(error.contains(expected), "missing `{expected}` in {error}");
+        }
+
+        let missing_context = format!(
+            "{COMPONENT}\n\n{}",
+            r#"[[profile]]
+id = "firefox"
+label = "Firefox"
+items = ["now-playing"]
+"#
+        );
+        assert!(
+            PluginManifest::from_toml(&missing_context)
+                .unwrap_err()
+                .to_string()
+                .contains("exact identities in total")
+        );
+    }
+
+    #[test]
     fn presentation_bar_minimum_covers_every_required_element() {
         let source = COMPONENT.replace("minimum_width = 256", "minimum_width = 255");
         let error = PluginManifest::from_toml(&source).unwrap_err().to_string();
@@ -1388,6 +1600,8 @@ maximum_width = 80
             items: vec![ItemContribution {
                 id: "now-playing".to_owned(),
                 label: "Now playing".to_owned(),
+                default_width: default_item_width(),
+                show_in_default_profile: true,
                 expanded_bar: None,
                 press_and_hold_bar: None,
             }],
@@ -1407,6 +1621,7 @@ maximum_width = 80
                 }],
                 principal_item: None,
             }],
+            profiles: Vec::new(),
             assets: Vec::new(),
             permissions: Vec::new(),
         };

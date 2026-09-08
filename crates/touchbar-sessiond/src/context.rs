@@ -16,6 +16,8 @@ use touchbar_model::ContextValue;
 
 use crate::wake::EventSignal;
 
+const MAX_TRACKED_ACTIVITIES: usize = 128;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContextEvent {
     pub key: String,
@@ -33,6 +35,61 @@ impl ContextEvent {
     fn application(value: &str) -> Self {
         Self::text("application.id", value.trim().to_ascii_lowercase())
     }
+
+    fn activity(value: &str, active: bool) -> Self {
+        Self {
+            key: format!("activity.{value}"),
+            value: ContextValue::Boolean(active),
+        }
+    }
+}
+
+#[derive(Default)]
+struct HyprlandEventTracker {
+    layer_counts: BTreeMap<String, u32>,
+}
+
+impl HyprlandEventTracker {
+    fn parse(&mut self, line: &str) -> Option<ContextEvent> {
+        let (name, payload) = line.split_once(">>")?;
+        match name {
+            "openlayer" => {
+                let activity = normalized_activity(payload)?;
+                if !self.layer_counts.contains_key(&activity)
+                    && self.layer_counts.len() >= MAX_TRACKED_ACTIVITIES
+                {
+                    return None;
+                }
+                let count = self.layer_counts.entry(activity.clone()).or_default();
+                *count = count.saturating_add(1);
+                (*count == 1).then(|| ContextEvent::activity(&activity, true))
+            }
+            "closelayer" => {
+                let activity = normalized_activity(payload)?;
+                let count = self.layer_counts.get_mut(&activity)?;
+                if *count > 1 {
+                    *count -= 1;
+                    None
+                } else {
+                    self.layer_counts.remove(&activity);
+                    Some(ContextEvent::activity(&activity, false))
+                }
+            }
+            _ => parse_hyprland_event(line),
+        }
+    }
+}
+
+fn normalized_activity(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_lowercase();
+    (!value.is_empty()
+        && value.len() <= 112
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'-' | b'_' | b'.' | b':')
+        }))
+    .then_some(value)
 }
 
 pub struct ContextReplay {
@@ -107,15 +164,22 @@ impl HyprlandContextSource {
         thread::Builder::new()
             .name("hyprland-touchbar-context".into())
             .spawn(move || {
+                let mut tracker = HyprlandEventTracker::default();
                 for line in BufReader::new(stream).lines() {
                     let Ok(line) = line else {
                         break;
                     };
-                    if let Some(event) = parse_hyprland_event(&line)
+                    if let Some(event) = tracker.parse(&line)
                         && retain_changed_fact(&mut last_values, &event)
                     {
+                        let closed_activity = (event.key.starts_with("activity.")
+                            && event.value == ContextValue::Boolean(false))
+                        .then(|| event.key.clone());
                         if sender.send(event).is_err() {
                             break;
+                        }
+                        if let Some(key) = closed_activity {
+                            last_values.remove(&key);
                         }
                         reader_signal.notify();
                     }
@@ -248,5 +312,22 @@ mod tests {
         let workspace = ContextEvent::text("workspace.id", "2");
         assert!(retain_changed_fact(&mut last, &workspace));
         assert!(!retain_changed_fact(&mut last, &workspace));
+    }
+
+    #[test]
+    fn layer_namespaces_become_refcounted_activity_facts() {
+        let mut tracker = HyprlandEventTracker::default();
+        assert_eq!(
+            tracker.parse("openlayer>>Omarchy-Image-Selector"),
+            Some(ContextEvent::activity("omarchy-image-selector", true))
+        );
+        assert_eq!(tracker.parse("openlayer>>omarchy-image-selector"), None);
+        assert_eq!(tracker.parse("closelayer>>omarchy-image-selector"), None);
+        assert_eq!(
+            tracker.parse("closelayer>>omarchy-image-selector"),
+            Some(ContextEvent::activity("omarchy-image-selector", false))
+        );
+        assert_eq!(tracker.parse("closelayer>>omarchy-image-selector"), None);
+        assert_eq!(tracker.parse("openlayer>>not a namespace"), None);
     }
 }

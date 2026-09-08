@@ -21,7 +21,21 @@ world = "touchbar:plugin/plugin@1.0.0"
 [[items]]
 id = "screensaver"
 label = "Screensaver"
+default_width = 2008
+show_in_default_profile = false
 
 [[items]]
 id = "palette"
 label = "Theme Palette"
+show_in_default_profile = false
+
+[[profile]]
+id = "screensaver"
+label = "Omarchy Screensaver"
+items = ["screensaver"]
+principal_item = "screensaver"
+applications = ["org.omarchy.screensaver"]
+# Omarchy's current image picker uses this namespace for both theme and
+# background selection. A future purpose-specific theme-picker namespace can
+# be added here without changing the host-side profile mechanism.
+activities = ["omarchy-image-selector", "theme-change"]

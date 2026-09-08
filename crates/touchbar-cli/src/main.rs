@@ -78,6 +78,7 @@ const USAGE: &str = r#"usage: touchbarctl plugin COMMAND [OPTIONS]
              [--secret NAME=OBJECT_PATH] [--clipboard-socket SOCKET]
   enable SOURCE | disable SOURCE | remove SOURCE
   item SOURCE ITEM enable|disable|width [PX]
+  profile SOURCE PROFILE enable|disable
 
 TOUCHBAR_HOME overrides the local store root."#;
 
@@ -134,6 +135,7 @@ fn run() -> Result<()> {
         "enable" => set_enabled(values, true),
         "disable" => set_enabled(values, false),
         "item" => item(values),
+        "profile" => profile(values),
         "remove" => remove(values),
         other => bail!("unknown plugin command `{other}`\n\n{USAGE}"),
     }
@@ -396,8 +398,8 @@ fn context(args: &[String]) -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&json!({
                 "manifest_version": 1, "host_api": touchbar_package::SUPPORTED_HOST_API_VERSION, "component_world": touchbar_package::SUPPORTED_COMPONENT_WORLD,
-                "commands": ["new", "build", "context", "check", "test", "replay", "dev", "run", "pack", "release-check", "publish", "add", "update", "rollback", "search", "catalog-check", "submit", "list", "inspect", "permissions", "permission", "enable", "disable", "item", "remove"],
-                "principles": ["stable item ids", "responsive rendering through 2008 pixels", "package-local presentation bars", "presentation width matrices", "theme roles", "sealed logical assets", "semantic image tint", "stable animation ids", "host-timed animations", "bounded validated GPU effects", "brokered capabilities", "scope-checked offline broker fixtures", "headless tests"]
+                "commands": ["new", "build", "context", "check", "test", "replay", "dev", "run", "pack", "release-check", "publish", "add", "update", "rollback", "search", "catalog-check", "submit", "list", "inspect", "permissions", "permission", "enable", "disable", "item", "profile", "remove"],
+                "principles": ["stable item ids", "responsive rendering through 2008 pixels", "package-local automatic profiles", "package-local presentation bars", "presentation width matrices", "theme roles", "sealed logical assets", "semantic image tint", "stable animation ids", "host-timed animations", "bounded validated GPU effects", "brokered capabilities", "scope-checked offline broker fixtures", "headless tests"]
             }))?
         ),
     }
@@ -413,7 +415,7 @@ fn check(args: &[String]) -> Result<()> {
             serde_json::to_string_pretty(&json!({
                 "ok": true, "source": package.manifest.plugin.source, "version": package.manifest.plugin.version,
                 "runtime": if matches!(&package.manifest.runtime, RuntimeSpec::Component { .. }) { "component" } else { "native" },
-                "items": package.manifest.items, "permissions": package.requests,
+                "items": package.manifest.items, "profiles": package.manifest.profiles, "permissions": package.requests,
                 "package_digest": package.package_digest, "artifacts": package.artifacts
             }))?
         ),
@@ -423,8 +425,9 @@ fn check(args: &[String]) -> Result<()> {
                 package.manifest.plugin.source, package.manifest.plugin.version
             );
             println!(
-                "    {} item(s), {} permission request(s)",
+                "    {} item(s), {} automatic profile(s), {} permission request(s)",
                 package.manifest.items.len(),
+                package.manifest.profiles.len(),
                 package.requests.len()
             );
             println!("    {}", package.package_digest);
@@ -1737,6 +1740,18 @@ fn inspect(args: &[String]) -> Result<()> {
                     if item.enabled { "enabled" } else { "disabled" }
                 )
             }
+            for profile in &installed.profiles {
+                println!(
+                    "profile: {} {} ({})",
+                    profile.id,
+                    if profile.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
+                    profile.label
+                )
+            }
             for request in &package.requests {
                 println!(
                     "permission: {} ({})",
@@ -2166,6 +2181,27 @@ fn item(args: &[String]) -> Result<()> {
         _ => bail!("usage: touchbarctl plugin item SOURCE ITEM enable|disable|width [PX]"),
     }
     println!("Updated {source} item {item}");
+    reload_if_running();
+    Ok(())
+}
+
+fn profile(args: &[String]) -> Result<()> {
+    let source = source(
+        args.first()
+            .context("profile requires SOURCE PROFILE ACTION")?,
+    )?;
+    let profile = args.get(1).context("profile requires PROFILE")?;
+    let action = args.get(2).context("profile requires ACTION")?;
+    if args.len() != 3 {
+        bail!("usage: touchbarctl plugin profile SOURCE PROFILE enable|disable");
+    }
+    let enabled = match action.as_str() {
+        "enable" => true,
+        "disable" => false,
+        _ => bail!("usage: touchbarctl plugin profile SOURCE PROFILE enable|disable"),
+    };
+    store()?.set_profile_enabled(&source, profile, enabled)?;
+    println!("Updated {source} profile {profile}");
     reload_if_running();
     Ok(())
 }

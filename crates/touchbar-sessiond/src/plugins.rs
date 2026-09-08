@@ -8,7 +8,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use touchbar_control::ProcessStatus;
 use touchbar_package::{
-    PluginManifest, PresentationBar, PresentationBarElement, PresentationGroupElement, RuntimeSpec,
+    AutomaticProfile, GithubSource, PluginManifest, PresentationBar, PresentationBarElement,
+    PresentationGroupElement, RuntimeSpec,
 };
 use touchbar_plugin_store::{
     InstalledOrigin, InstalledRuntime, PluginStore, StorePaths, inspect_package,
@@ -16,6 +17,11 @@ use touchbar_plugin_store::{
 use touchbar_policy::{
     CapabilityRegistry, CapabilityRequest, GrantStore, PackageInstance, Provenance, RuntimeKind,
     SessionGrants, calculate_effective_policy,
+};
+use touchbar_profile_config::{
+    ContributionConfig, PROFILE_CONFIG_VERSION, PredicateConfig, ProfileConfig, ProfileDocument,
+    ProfileElementConfig, ProfileItemConfig, ProfileItemRefConfig, ProfileRuleConfig, ScopeConfig,
+    SlotPolicyConfig,
 };
 
 const MAX_AUTOMATIC_RESTARTS: u32 = 8;
@@ -130,6 +136,217 @@ pub struct PresentationCatalog {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PackagedProfileCatalog {
+    enabled_items: Vec<ProfileItemConfig>,
+    profiles: Vec<PackagedProfile>,
+    manages_default_visibility: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PackagedProfile {
+    source: GithubSource,
+    definition: AutomaticProfile,
+}
+
+impl PackagedProfileCatalog {
+    fn add_manifest(
+        &mut self,
+        source: &GithubSource,
+        manifest: &PluginManifest,
+        enabled_items: &BTreeSet<String>,
+        enabled_profiles: &BTreeSet<String>,
+    ) {
+        self.manages_default_visibility |= !manifest.profiles.is_empty()
+            || manifest
+                .items
+                .iter()
+                .any(|item| enabled_items.contains(&item.id) && !item.show_in_default_profile);
+        self.enabled_items.extend(
+            manifest
+                .items
+                .iter()
+                .filter(|item| item.show_in_default_profile && enabled_items.contains(&item.id))
+                .map(|item| ProfileItemConfig {
+                    plugin: source.to_string(),
+                    item: item.id.clone(),
+                    required: false,
+                }),
+        );
+        self.profiles.extend(
+            manifest
+                .profiles
+                .iter()
+                .filter(|profile| {
+                    enabled_profiles.contains(&profile.id)
+                        && profile
+                            .items
+                            .iter()
+                            .all(|item| enabled_items.contains(item))
+                })
+                .cloned()
+                .map(|definition| PackagedProfile {
+                    source: source.clone(),
+                    definition,
+                }),
+        );
+    }
+
+    /// Compose enabled package profiles over the user-owned document without
+    /// rewriting it. Package priorities are placed below the lowest user
+    /// priority, so explicit configuration always wins.
+    pub fn merge(&self, user: Option<&ProfileDocument>) -> Result<Option<ProfileDocument>> {
+        if self.profiles.is_empty() && (user.is_some() || !self.manages_default_visibility) {
+            return Ok(user.cloned());
+        }
+        let mut document = user.cloned().unwrap_or_else(|| {
+            let (contributions, elements) = if self.enabled_items.is_empty() {
+                (
+                    Vec::new(),
+                    vec![ProfileElementConfig::FlexibleSpace {
+                        minimum: 0,
+                        weight: 1,
+                    }],
+                )
+            } else {
+                (
+                    vec![ContributionConfig {
+                        id: "automatic.installed-items".into(),
+                        items: self.enabled_items.clone(),
+                        scope: ScopeConfig::Global,
+                        priority: 0,
+                        when: PredicateConfig::Always,
+                    }],
+                    vec![ProfileElementConfig::Slot {
+                        id: "installed-items".into(),
+                        policy: SlotPolicyConfig::Fixed,
+                        contributions: vec!["automatic.installed-items".into()],
+                    }],
+                )
+            };
+            ProfileDocument {
+                version: PROFILE_CONFIG_VERSION,
+                fallback: "automatic.default".into(),
+                contributions,
+                profiles: vec![ProfileConfig {
+                    id: "automatic.default".into(),
+                    elements,
+                    principal_item: None,
+                }],
+                rules: Vec::new(),
+                regions: Vec::new(),
+            }
+        });
+
+        let user_priority_floor = document
+            .rules
+            .iter()
+            .map(|rule| rule.priority)
+            .min()
+            .unwrap_or(0);
+        let application_priority = user_priority_floor.saturating_sub(2);
+        let activity_priority = user_priority_floor.saturating_sub(1);
+
+        for packaged in &self.profiles {
+            let profile_id = packaged_definition_id(&packaged.source, &packaged.definition.id);
+            let contribution_id = format!("{profile_id}.items");
+            document.contributions.push(ContributionConfig {
+                id: contribution_id.clone(),
+                items: packaged
+                    .definition
+                    .items
+                    .iter()
+                    .map(|item| ProfileItemConfig {
+                        plugin: packaged.source.to_string(),
+                        item: item.clone(),
+                        required: false,
+                    })
+                    .collect(),
+                scope: ScopeConfig::Global,
+                priority: 0,
+                when: PredicateConfig::Always,
+            });
+            document.profiles.push(ProfileConfig {
+                id: profile_id.clone(),
+                elements: vec![ProfileElementConfig::Slot {
+                    id: "package-items".into(),
+                    policy: SlotPolicyConfig::Fixed,
+                    contributions: vec![contribution_id],
+                }],
+                principal_item: packaged.definition.principal_item.as_ref().map(|item| {
+                    ProfileItemRefConfig {
+                        plugin: packaged.source.to_string(),
+                        item: item.clone(),
+                    }
+                }),
+            });
+            // Foreground layers are more specific than the application below
+            // them, so an open picker wins while preserving user precedence.
+            if !packaged.definition.activities.is_empty() {
+                document.rules.push(ProfileRuleConfig {
+                    profile: profile_id.clone(),
+                    priority: activity_priority,
+                    when: exact_activity_matches(&packaged.definition.activities),
+                });
+            }
+            if !packaged.definition.applications.is_empty() {
+                document.rules.push(ProfileRuleConfig {
+                    profile: profile_id,
+                    priority: application_priority,
+                    when: exact_text_matches("application.id", &packaged.definition.applications),
+                });
+            }
+        }
+        document.validate()?;
+        Ok(Some(document))
+    }
+
+    pub fn profile_count(&self) -> usize {
+        self.profiles.len()
+    }
+}
+
+fn packaged_definition_id(source: &GithubSource, local: &str) -> String {
+    format!(
+        "package.{}.{}.{}.{}.{}",
+        source.owner().len(),
+        source.owner(),
+        source.repository().len(),
+        source.repository(),
+        local
+    )
+}
+
+fn exact_text_matches(key: &str, values: &[String]) -> PredicateConfig {
+    let mut predicates = values
+        .iter()
+        .map(|value| PredicateConfig::TextEquals {
+            key: key.into(),
+            value: value.clone(),
+        })
+        .collect::<Vec<_>>();
+    if predicates.len() == 1 {
+        predicates.pop().unwrap()
+    } else {
+        PredicateConfig::Any { predicates }
+    }
+}
+
+fn exact_activity_matches(values: &[String]) -> PredicateConfig {
+    let mut predicates = values
+        .iter()
+        .map(|value| PredicateConfig::BooleanEquals {
+            key: format!("activity.{value}"),
+            value: true,
+        })
+        .collect::<Vec<_>>();
+    if predicates.len() == 1 {
+        predicates.pop().unwrap()
+    } else {
+        PredicateConfig::Any { predicates }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct ItemBars {
     expanded: Option<String>,
     press_and_hold: Option<String>,
@@ -235,6 +452,7 @@ pub struct PluginManager {
     wayland_display: String,
     processes: BTreeMap<Key, Managed>,
     presentations: PresentationCatalog,
+    profiles: PackagedProfileCatalog,
     next_policy_refresh: Instant,
     trusted_components: bool,
 }
@@ -254,6 +472,7 @@ impl PluginManager {
             wayland_display,
             processes: BTreeMap::new(),
             presentations: PresentationCatalog::default(),
+            profiles: PackagedProfileCatalog::default(),
             next_policy_refresh: Instant::now(),
             trusted_components,
         };
@@ -263,7 +482,7 @@ impl PluginManager {
 
     pub fn reload(&mut self) -> Result<()> {
         let store = PluginStore::open(self.paths.clone())?;
-        let (desired, presentations) = desired_state(&store, self.trusted_components)?;
+        let (desired, presentations, profiles) = desired_state(&store, self.trusted_components)?;
         let old = std::mem::take(&mut self.processes);
         for (key, mut process) in old {
             if desired
@@ -303,6 +522,7 @@ impl PluginManager {
             self.processes.insert(key, process);
         }
         self.presentations = presentations;
+        self.profiles = profiles;
         self.refresh_permission_states();
         Ok(())
     }
@@ -385,6 +605,10 @@ impl PluginManager {
         &self.presentations
     }
 
+    pub fn profile_catalog(&self) -> &PackagedProfileCatalog {
+        &self.profiles
+    }
+
     pub fn unavailable_reason(&self, qualified_item: &str) -> Option<UnavailableReason> {
         let (source, item) = qualified_item.rsplit_once('#')?;
         let process = self.processes.get(&Key {
@@ -429,9 +653,14 @@ impl Drop for PluginManager {
 fn desired_state(
     store: &PluginStore,
     trusted_components: bool,
-) -> Result<(BTreeMap<Key, Desired>, PresentationCatalog)> {
+) -> Result<(
+    BTreeMap<Key, Desired>,
+    PresentationCatalog,
+    PackagedProfileCatalog,
+)> {
     let mut output = BTreeMap::new();
     let mut presentations = PresentationCatalog::default();
+    let mut profiles = PackagedProfileCatalog::default();
     for installed in store.plugins().filter(|plugin| plugin.enabled) {
         let package_path = store.package_path(installed)?;
         let inspected = inspect_package(&package_path)
@@ -452,7 +681,19 @@ fn desired_state(
             .filter(|item| item.enabled)
             .map(|item| item.id.clone())
             .collect::<BTreeSet<_>>();
+        let enabled_profiles = installed
+            .profiles
+            .iter()
+            .filter(|profile| profile.enabled)
+            .map(|profile| profile.id.clone())
+            .collect::<BTreeSet<_>>();
         presentations.add_manifest(&inspected.manifest, &enabled_items)?;
+        profiles.add_manifest(
+            &installed.source,
+            &inspected.manifest,
+            &enabled_items,
+            &enabled_profiles,
+        );
         let launch = match (&installed.runtime, &inspected.manifest.runtime) {
             (InstalledRuntime::Component, RuntimeSpec::Component { .. }) if trusted_components => {
                 Launch::TrustedComponent
@@ -544,7 +785,7 @@ fn desired_state(
             }
         }
     }
-    Ok((output, presentations))
+    Ok((output, presentations, profiles))
 }
 
 fn start(supervisor: &Path, host: &Path, paths: &StorePaths, display: &str, process: &mut Managed) {
@@ -670,6 +911,7 @@ fn current_target() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use touchbar_model::{ContextSnapshot, ContextValue};
 
     fn managed() -> Managed {
         Managed {
@@ -726,5 +968,147 @@ mod tests {
             process.unavailable_reason(),
             UnavailableReason::AwaitingConsent
         );
+    }
+
+    fn packaged_profiles() -> PackagedProfileCatalog {
+        let source = GithubSource::new("owner", "omarchy").unwrap();
+        PackagedProfileCatalog {
+            enabled_items: Vec::new(),
+            profiles: vec![PackagedProfile {
+                source,
+                definition: AutomaticProfile {
+                    id: "screensaver".into(),
+                    label: "Screensaver".into(),
+                    items: vec!["screensaver".into()],
+                    principal_item: Some("screensaver".into()),
+                    applications: vec!["org.omarchy.screensaver".into()],
+                    activities: vec!["omarchy-image-selector".into()],
+                    enabled_by_default: true,
+                },
+            }],
+            manages_default_visibility: true,
+        }
+    }
+
+    #[test]
+    fn package_profiles_create_a_valid_contextual_document_without_user_config() {
+        let document = packaged_profiles().merge(None).unwrap().unwrap();
+        document.validate().unwrap();
+        assert_eq!(document.fallback, "automatic.default");
+        assert_eq!(document.profiles.len(), 2);
+        assert_eq!(document.rules.len(), 2);
+        assert_eq!(document.rules[0].priority, -1);
+        assert_eq!(document.rules[1].priority, -2);
+        assert_eq!(
+            document.rules[0].when,
+            PredicateConfig::BooleanEquals {
+                key: "activity.omarchy-image-selector".into(),
+                value: true,
+            }
+        );
+
+        let built = document
+            .build(
+                &BTreeMap::new(),
+                ContextSnapshot {
+                    generation: 1,
+                    facts: BTreeMap::from([(
+                        "activity.omarchy-image-selector".into(),
+                        ContextValue::Boolean(true),
+                    )]),
+                },
+            )
+            .unwrap();
+        assert!(
+            built
+                .controller
+                .current()
+                .composition
+                .profile
+                .as_str()
+                .ends_with(".screensaver")
+        );
+    }
+
+    #[test]
+    fn user_rules_are_kept_ahead_of_lower_priority_package_defaults() {
+        let user = ProfileDocument::from_toml(
+            r#"version = 1
+fallback = "user-default"
+
+[[profile]]
+id = "user-default"
+[[profile.element]]
+kind = "flexible-space"
+minimum = 0
+weight = 1
+
+[[profile]]
+id = "user-override"
+[[profile.element]]
+kind = "flexible-space"
+minimum = 0
+weight = 1
+
+[[rule]]
+profile = "user-override"
+priority = 0
+[rule.when]
+kind = "text-equals"
+key = "application.id"
+value = "org.omarchy.screensaver"
+"#,
+        )
+        .unwrap();
+        let document = packaged_profiles().merge(Some(&user)).unwrap().unwrap();
+        assert_eq!(document.rules[0].profile, "user-override");
+        assert_eq!(document.rules[1].priority, -1);
+        assert_eq!(document.rules[2].priority, -2);
+        document.validate().unwrap();
+    }
+
+    #[test]
+    fn contextual_only_items_stay_out_of_the_generated_fallback() {
+        let manifest = PluginManifest::from_toml(
+            r#"manifest_version = 1
+[plugin]
+name = "Omarchy"
+version = "0.1.0"
+description = "Test"
+license = "MIT"
+source = "github:owner/omarchy"
+api = "^1.0"
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+[[items]]
+id = "screensaver"
+label = "Screensaver"
+show_in_default_profile = false
+[[items]]
+id = "palette"
+label = "Palette"
+[[profile]]
+id = "screensaver"
+label = "Screensaver"
+items = ["screensaver"]
+activities = ["theme-change"]
+"#,
+        )
+        .unwrap();
+        let source = manifest.plugin.source.clone();
+        let mut catalog = PackagedProfileCatalog::default();
+        catalog.add_manifest(
+            &source,
+            &manifest,
+            &BTreeSet::from(["screensaver".into(), "palette".into()]),
+            &BTreeSet::from(["screensaver".into()]),
+        );
+        assert_eq!(catalog.enabled_items.len(), 1);
+        assert_eq!(catalog.enabled_items[0].item, "palette");
+        let document = catalog.merge(None).unwrap().unwrap();
+        assert_eq!(document.contributions[0].items[0].item, "palette");
+        assert_eq!(document.contributions[1].items[0].item, "screensaver");
     }
 }

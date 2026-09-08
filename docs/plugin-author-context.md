@@ -2,15 +2,34 @@
 
 TouchBar packs are immutable local packages. A pack may contribute multiple stable items. The default runtime is a WebAssembly component; it has no ambient operating-system access and reaches the desktop only through explicitly requested, user-approved broker capabilities.
 
-Packages do not own profiles in v1. Profiles are user/session-owned because
-they arbitrate ordering and space among unrelated packs. An application pack
-can be used contextually today by referencing its stable items from a
-`[[contribution]]` in `profiles.toml`, setting `scope = "application"`, and
-matching `application.id`; bind that contribution into a `select` or `collect`
-slot. `plugin run --when-application CLASS` creates that arrangement
-disposably for on-device testing. A future package-contribution contract should
-let a pack declare this activation recipe without granting it ownership of the
-user's profile or placement.
+Packages may own bounded automatic profiles for their own items. This is the
+zero-configuration path for an application integration: declare a `[[profile]]`
+with exact `applications` and/or foreground-layer `activities`, and the host
+merges it in memory when the plugin is enabled. The package cannot reference
+another package's item, inspect arbitrary context, choose a competing priority,
+or rewrite `profiles.toml`. User rules always take precedence.
+
+```toml
+[[items]]
+id = "controls"
+label = "Browser controls"
+default_width = 320
+show_in_default_profile = false
+
+[[profile]]
+id = "firefox"
+label = "Firefox"
+items = ["controls"]
+principal_item = "controls"
+applications = ["firefox", "org.mozilla.firefox"]
+```
+
+`show_in_default_profile = false` keeps a contextual item out of the generated
+all-plugin fallback while leaving its process available for its automatic
+profile. Both item and profile choices survive reinstall/update. A user can run
+`touchbarctl plugin profile SOURCE PROFILE disable` without editing a profile
+document. `plugin run --when-application CLASS` remains the disposable
+on-device test path.
 
 Use theme roles from the UI protocol rather than fixed foreground/background colors. The daemon sends a fresh theme snapshot whenever the active palette changes. Layouts must render at any assigned width; use responsive variants and keep item IDs stable across releases. The canvas follows the attached panel, so never assume a particular total strip width. The component host supplies the manifest's canonical `github:owner/repository` source as the runtime plugin identity. A native runtime must pass that exact manifest source to `ClientOptions::new`; profiles identify a surface with the collision-free pair `{ plugin = "github:owner/repository", item = "local-item-id" }`.
 

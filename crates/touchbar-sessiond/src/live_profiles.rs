@@ -207,8 +207,10 @@ impl LiveProfiles {
                 .iter()
                 .any(|id| id == profile.as_str())
         });
-        self.connected.clear();
-        self.try_initialize(&relevant)
+        // Rebuild even when both documents currently see zero connected
+        // items. Otherwise an optional-only profile could retain the old
+        // controller after a user or package catalog reload.
+        self.rebuild(relevant)
     }
 
     pub fn select_profile(

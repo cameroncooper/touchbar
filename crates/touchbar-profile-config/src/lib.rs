@@ -31,7 +31,11 @@ const MAX_ELEMENTS: usize = 512;
 const MAX_ITEMS: usize = 256;
 const MAX_PREDICATE_DEPTH: usize = 8;
 const MAX_PREDICATE_NODES: usize = 128;
-const MAX_ID_BYTES: usize = 128;
+const MAX_CONTEXT_KEY_BYTES: usize = 128;
+// Package-owned definitions use a length-delimited source prefix so their IDs
+// cannot collide across repositories. The longest valid GitHub identity plus
+// a local manifest ID remains below this bound.
+const MAX_ID_BYTES: usize = 256;
 const MAX_VALUE_BYTES: usize = 256;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -890,10 +894,10 @@ fn validate_predicate(predicate: &PredicateConfig, depth: usize, nodes: &mut usi
     match predicate {
         PredicateConfig::Always => {}
         PredicateConfig::Present { key } | PredicateConfig::BooleanEquals { key, .. } => {
-            validate_fact("context key", key, MAX_ID_BYTES)?;
+            validate_fact("context key", key, MAX_CONTEXT_KEY_BYTES)?;
         }
         PredicateConfig::TextEquals { key, value } => {
-            validate_fact("context key", key, MAX_ID_BYTES)?;
+            validate_fact("context key", key, MAX_CONTEXT_KEY_BYTES)?;
             validate_fact("context value", value, MAX_VALUE_BYTES)?;
         }
         PredicateConfig::All { predicates } | PredicateConfig::Any { predicates } => {

@@ -22,8 +22,9 @@ use memmap2::{Mmap, MmapOptions};
 use touchbar_layout::{
     BarSpec, Element, GroupElement, GroupLayout, GroupSpec, ItemId, ItemSpec, resolve,
 };
-use touchbar_model::ProfileCompositionSnapshot;
+use touchbar_model::{ContextValue, ProfileCompositionSnapshot};
 use touchbar_package::{PresentationBarElement, PresentationGroupElement, PresentationGroupLayout};
+use touchbar_profile_config::ProfileDocument;
 use touchbar_protocol::{
     DEFAULT_REGION_WIDTH, DEFAULT_SOCKET_NAME, REFRESH_MILLIHZ, TOUCHBAR_HEIGHT,
     TOUCHBAR_PROTOCOL_VERSION,
@@ -88,6 +89,7 @@ const DRM_FORMAT_MOD_APPLE_TILED: u64 = 0x0c00_0000_0000_0001;
 const DRM_FORMAT_MOD_APPLE_TILED_COMPRESSED: u64 = 0x0c00_0000_0000_0002;
 const MAX_PLUGIN_SURFACES: usize = 64;
 const PROFILE_RELOAD_COALESCE: Duration = Duration::from_millis(75);
+const THEME_CHANGE_ACTIVITY_DURATION: Duration = Duration::from_secs(2);
 const MAX_PENDING_CONFIGURES: usize = 64;
 const FN_TAP_MAX_DURATION: Duration = Duration::from_millis(250);
 const FN_DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(400);
@@ -560,8 +562,11 @@ struct State {
     appearance_source: AppearanceSource,
     power_source: PowerSource,
     live_profiles: Option<LiveProfiles>,
+    user_profile_document: Option<ProfileDocument>,
+    packaged_profiles: plugins::PackagedProfileCatalog,
     profile_layouts: u64,
     context_changes: u64,
+    theme_change_activity_until: Option<Instant>,
     next_layer_id: u64,
     next_configure_serial: u32,
     input: InputRouter<ObjectId>,
@@ -619,6 +624,7 @@ impl State {
         direct_output: Option<DirectOutput>,
         hardware_socket: Option<PathBuf>,
         live_profiles: Option<LiveProfiles>,
+        user_profile_document: Option<ProfileDocument>,
         profile_path: Option<PathBuf>,
         system_bar: bool,
     ) -> Result<Self> {
@@ -653,8 +659,11 @@ impl State {
             appearance_source,
             power_source,
             live_profiles,
+            user_profile_document,
+            packaged_profiles: plugins::PackagedProfileCatalog::default(),
             profile_layouts: 0,
             context_changes: 0,
+            theme_change_activity_until: None,
             next_layer_id: 1,
             next_configure_serial: 1,
             input: InputRouter::default(),
@@ -751,6 +760,25 @@ impl State {
         }
     }
 
+    fn set_packaged_profile_catalog(
+        &mut self,
+        catalog: plugins::PackagedProfileCatalog,
+    ) -> Result<()> {
+        println!(
+            "package-profile-catalog profiles={}",
+            catalog.profile_count()
+        );
+        // The built-in profile demo is a self-contained diagnostic fixture.
+        // Normal automatic mode always retains a discoverable profile path.
+        if self.profile_path.is_none() {
+            return Ok(());
+        }
+        let document = catalog.merge(self.user_profile_document.as_ref())?;
+        self.replace_effective_profiles(document)?;
+        self.packaged_profiles = catalog;
+        Ok(())
+    }
+
     fn poll_appearance(&mut self) -> Result<bool> {
         let Some(snapshot) = self.appearance_source.poll() else {
             return Ok(false);
@@ -764,7 +792,31 @@ impl State {
         self.refresh_system_scene()?;
         self.refresh_plugin_placeholder_scene()?;
         self.scene_dirty = true;
+        self.theme_change_activity_until = Some(Instant::now() + THEME_CHANGE_ACTIVITY_DURATION);
+        self.handle_context_event(ContextEvent {
+            key: "activity.theme-change".into(),
+            value: ContextValue::Boolean(true),
+        })?;
         Ok(true)
+    }
+
+    fn poll_transient_context(&mut self) -> Result<()> {
+        if self
+            .theme_change_activity_until
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.theme_change_activity_until = None;
+            self.handle_context_event(ContextEvent {
+                key: "activity.theme-change".into(),
+                value: ContextValue::Boolean(false),
+            })?;
+        }
+        Ok(())
+    }
+
+    fn next_transient_context_delay(&self) -> Option<Duration> {
+        self.theme_change_activity_until
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
 
     fn poll_power(&mut self) -> bool {
@@ -2152,8 +2204,9 @@ impl State {
             return Ok(());
         };
         if !path.exists() {
-            self.live_profiles = None;
-            self.relayout_compact()?;
+            let document = self.packaged_profiles.merge(None)?;
+            self.replace_effective_profiles(document)?;
+            self.user_profile_document = None;
             println!(
                 "profile-source=automatic-all-items config={}",
                 path.display()
@@ -2161,21 +2214,36 @@ impl State {
             return Ok(());
         }
         let document = touchbar_profile_config::load(&path)?;
+        let effective = self.packaged_profiles.merge(Some(&document))?;
+        self.replace_effective_profiles(effective)?;
+        self.user_profile_document = Some(document);
+        println!("profile-source={} reloaded=true", path.display());
+        Ok(())
+    }
+
+    fn replace_effective_profiles(&mut self, document: Option<ProfileDocument>) -> Result<()> {
         let connected = self.connected_item_specs();
-        let snapshot = if let Some(profiles) = &mut self.live_profiles {
-            profiles.replace_document(document, &connected)?
-        } else {
-            let mut profiles = LiveProfiles::configured(document);
-            let snapshot = profiles.try_initialize(&connected)?;
-            self.live_profiles = Some(profiles);
-            snapshot
+        let snapshot = match document {
+            Some(document) => {
+                if let Some(profiles) = &mut self.live_profiles {
+                    profiles.replace_document(document, &connected)?
+                } else {
+                    let mut profiles = LiveProfiles::configured(document);
+                    let snapshot = profiles.try_initialize(&connected)?;
+                    self.live_profiles = Some(profiles);
+                    snapshot
+                }
+            }
+            None => {
+                self.live_profiles = None;
+                None
+            }
         };
         if let Some(snapshot) = snapshot {
             self.apply_profile_snapshot(&snapshot)?;
         } else {
             self.relayout_compact()?;
         }
-        println!("profile-source={} reloaded=true", path.display());
         Ok(())
     }
 
@@ -4018,13 +4086,19 @@ fn initialize_session_permissions(path: &Path) -> Result<()> {
         .context("initialize session-only plugin permissions")
 }
 
-fn load_live_profiles(args: &Args) -> Result<(Option<LiveProfiles>, Option<PathBuf>)> {
+fn load_live_profiles(
+    args: &Args,
+) -> Result<(
+    Option<LiveProfiles>,
+    Option<ProfileDocument>,
+    Option<PathBuf>,
+)> {
     if args.profile_demo && args.profiles.is_some() {
         bail!("--profiles and --profile-demo are mutually exclusive");
     }
     if args.profile_demo {
         println!("profile-source=built-in-demo");
-        return Ok((Some(LiveProfiles::demo()), None));
+        return Ok((Some(LiveProfiles::demo()), None, None));
     }
 
     let explicit = args.profiles.is_some();
@@ -4041,7 +4115,7 @@ fn load_live_profiles(args: &Args) -> Result<(Option<LiveProfiles>, Option<PathB
             "profile-source=automatic-all-items config={}",
             path.display()
         );
-        return Ok((None, Some(path)));
+        return Ok((None, None, Some(path)));
     }
     let document = touchbar_profile_config::load(&path)?;
     println!(
@@ -4050,7 +4124,11 @@ fn load_live_profiles(args: &Args) -> Result<(Option<LiveProfiles>, Option<PathB
         document.profile_ids().len(),
         document.item_ids().len()
     );
-    Ok((Some(LiveProfiles::configured(document)), Some(path)))
+    Ok((
+        Some(LiveProfiles::configured(document.clone())),
+        Some(document),
+        Some(path),
+    ))
 }
 
 fn choose_wait_delay(delays: impl IntoIterator<Item = Option<Duration>>) -> Option<Duration> {
@@ -4157,7 +4235,7 @@ fn main() -> Result<()> {
     let args = parse_args();
     install_termination_signal_handlers()?;
     let plugin_paths = touchbar_plugin_store::StorePaths::discover()?;
-    let (live_profiles, profile_path) = load_live_profiles(&args)?;
+    let (live_profiles, user_profile_document, profile_path) = load_live_profiles(&args)?;
     let mut profile_watcher =
         profile_path
             .as_deref()
@@ -4250,11 +4328,13 @@ fn main() -> Result<()> {
         direct_output,
         args.hardware_socket.clone(),
         live_profiles,
+        user_profile_document,
         profile_path,
         args.system_bar,
     )?;
     if let Some(manager) = &plugin_manager {
         state.set_presentation_catalog(manager.presentation_catalog().clone());
+        state.set_packaged_profile_catalog(manager.profile_catalog().clone())?;
     }
     let mut frame_period = state.animation_frame_period();
     let mut next_frame = Instant::now() + frame_period;
@@ -4309,6 +4389,8 @@ fn main() -> Result<()> {
                         if let Some(manager) = plugin_manager.as_mut() {
                             manager.reload().context("reload plugins")?;
                             state.set_presentation_catalog(manager.presentation_catalog().clone());
+                            state
+                                .set_packaged_profile_catalog(manager.profile_catalog().clone())?;
                         }
                         state.reload_profiles().context("reload profiles")?;
                         Ok("runtime configuration reloaded")
@@ -4418,6 +4500,7 @@ fn main() -> Result<()> {
         }
         state.poll_hardware_reconnect();
         let pacing_changed = state.poll_appearance()? | state.poll_power();
+        state.poll_transient_context()?;
         if pacing_changed {
             frame_period = state.animation_frame_period();
             next_frame = Instant::now() + frame_period;
@@ -4544,6 +4627,7 @@ fn main() -> Result<()> {
             state.appearance_source.next_poll_delay(),
             Some(state.power_source.next_poll_delay()),
             state.next_hardware_reconnect_delay(),
+            state.next_transient_context_delay(),
             hyprland_delay,
             profile_reload_delay,
             plugin_manager

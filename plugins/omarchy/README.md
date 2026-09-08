@@ -4,7 +4,7 @@ The Touch Bar as part of an Omarchy desktop: the pixel field from the Omarchy
 homepage re-composed for a 2008x60 ribbon, plus a palette strip that proves it
 is wearing the current theme.
 
-![The pixelated Omarchy wordmark in its themed field](../../docs/images/packs/omarchy/screensaver-2008-dark.png)
+![The animated pixelated Omarchy wordmark in its themed field](../../docs/images/packs/omarchy/screensaver-2008-dark.gif)
 
 **This package requests no capabilities.** It is three validated effects, one
 retained canvas, and host-timed motion. It cannot read the filesystem, the
@@ -46,6 +46,21 @@ touchbarctl plugin run \
 omarchy-launch-screensaver force
 ```
 
+For the installed zero-configuration behavior, install and enable the pack:
+
+```bash
+touchbarctl plugin add --path plugins/omarchy
+touchbarctl plugin enable github:cameroncooper/touchbar-omarchy
+```
+
+The manifest-provided `screensaver` profile then appears automatically while
+`org.omarchy.screensaver` is focused or Omarchy's
+`omarchy-image-selector` layer is open. The item is deliberately excluded from
+the normal fallback bar. Any completed TouchBar theme change also holds this
+profile for two seconds, long enough to show the newly resolved palette after
+the picker closes. Disable only this behavior with
+`touchbarctl plugin profile github:cameroncooper/touchbar-omarchy screensaver disable`.
+
 The command builds and validates the local package, installs it only into an
 isolated temporary store, asks the installed user session to yield its hardware
 connection, and launches the workspace session compositor. The privileged
@@ -56,6 +71,8 @@ permissions and broker behavior.
 `plugin replay --scenario tests/replay.json --screenshots DIR` renders the whole
 sequence — rest, a light and ripple crossing the field, a theme change
 mid-animation, reduced motion, and both wake frames — without hardware.
+Run `scripts/generate-omarchy-gif.sh` from the repository root to regenerate
+the animated README preview from one complete deterministic effect period.
 
 ## Designed for this strip, not a phone
 
@@ -114,12 +131,11 @@ into hover and crest pixels, without the package knowing the theme's name.
 
 ## What is still a prototype
 
-- **The wake is a press.** In a session it should be a profile switch: Omarchy's
-  screensaver is a window (class `org.omarchy.screensaver`), the session daemon
-  already tails Hyprland's event socket for context, and profile rules already
-  switch on a context fact. That is the cheap path — no new presentation policy,
-  and `full-bar` is still deliberately rejected. The press is how the simulator
-  gets to see the animation.
+- **The image-picker namespace is shared.** Current Omarchy uses
+  `omarchy-image-selector` for both theme and background selection, so both
+  activate the profile. A purpose-specific namespace in Omarchy can be added to
+  the manifest when available. The simulator's press-to-wake remains a local
+  preview affordance; installed handoff is context-driven.
 - **Backlight.** `touchbard` drops to its idle level on seat inactivity, so
   today this plays dim. Dim is arguably correct and power-honest, but it should
   be a decision rather than a discovery.

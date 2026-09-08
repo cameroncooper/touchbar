@@ -1,7 +1,9 @@
 # Profile and slot composition contract
 
-Application focus does not replace the entire Touch Bar. It changes the set of
-active contributions inside a user-owned profile.
+Application focus selects a profile transactionally. A user document can
+compose arbitrary cross-package layouts; a package can additionally provide a
+bounded, package-local automatic profile that works immediately after the
+plugin is enabled.
 
 ## Definitions
 
@@ -98,13 +100,33 @@ The pure `touchbar-model` module deliberately does not define configuration
 serialization, plugin package metadata, a desktop context source, or a control
 transport. Those remain adapters around its semantics.
 
+## Package-provided automatic profiles
+
+A manifest `[[profile]]` names only items from the same immutable package and
+matches exact normalized application classes and/or Hyprland layer namespaces.
+When the plugin and stored profile choice are enabled, `touchbar-sessiond`
+generates collision-free internal profile/contribution IDs and merges them with
+the user document in memory. Package rules are assigned below the lowest user
+priority, so a user rule wins even when it uses a negative priority. An active
+foreground-layer activity is more specific than an application match.
+
+Items may set `show_in_default_profile = false` when they make sense only in a
+contextual profile. If no user document exists, enabled items that remain
+default-visible form the fallback; contextual profiles are added around that
+fallback. Disabling a referenced item also removes its package profile from the
+effective catalog. `touchbarctl plugin profile SOURCE PROFILE enable|disable`
+persists the profile choice across updates. Application and activity selection
+uses ordinary context rules, not session leases or another daemon.
+
 ## Fresh-v1 user configuration
 
 `touchbar-profile-config` is the strict serialization adapter. The default path
 is `$XDG_CONFIG_HOME/touchbar/profiles.toml`; `TOUCHBAR_HOME`
 places it at `$TOUCHBAR_HOME/profiles.toml`, and `touchbar-sessiond
 --profiles FILE` selects an explicit file. If no file exists, the compositor
-retains the simple all-connected-items layout.
+retains the simple all-connected-items layout until an enabled package provides
+an automatic profile. It then synthesizes the equivalent fallback from
+default-visible installed items and adds the contextual package profiles.
 
 The format has only version 1. There are no aliases, migration readers, legacy
 item forms, or compatibility shims. Unknown fields, unsupported versions,
@@ -177,12 +199,18 @@ rapid focus changes legal while retaining the last acknowledged frame.
 ## Runtime control and context
 
 The packaged user service connects to Hyprland's event socket. Application
-classes are normalized to lowercase; `activewindow`, `workspace`,
-`workspacev2`, and `focusedmon` changes become typed application/workspace
-facts. Startup before Hyprland and compositor restarts are nonfatal: the source
+classes and layer namespaces are normalized to lowercase; `activewindow`,
+`workspace`, `workspacev2`, and `focusedmon` changes become typed
+application/workspace facts. `openlayer` and `closelayer` maintain
+reference-counted boolean `activity.NAMESPACE` facts, so a multi-monitor layer
+does not deactivate until its final instance closes. Startup before Hyprland
+and compositor restarts are nonfatal: the source
 reconnects without restarting plugins or discarding profile state. The same
 transactional controller defers context changes, manual selection, item
 arrival/removal, and configuration replacement until captured gestures end.
+An accepted appearance-file change also raises the host-owned
+`activity.theme-change` fact for two seconds. A theme integration can use that
+bounded tail to display its newly resolved palette after a picker layer closes.
 
 The same-user bounded control socket provides:
 

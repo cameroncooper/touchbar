@@ -50,6 +50,12 @@ Its user unit is wanted by and part of `graphical-session.target`, so it follows
 the actual desktop login lifetime even when the user service manager lingers
 between sessions.
 
+Plugin manifests may contribute package-local automatic profiles. The session
+daemon merges enabled declarations with the user document in memory and feeds
+application focus and foreground-layer activity into the same composition
+controller. This path neither creates a session lease nor grants focused-app
+metadata to plugin code; user-authored rules retain precedence.
+
 After `touchbard` verifies the Unix peer credentials against logind's active
 `seat0` user, it lends a bounded XRGB8888 DMA-BUF swapchain and sends only
 normalized Touch Bar contacts plus Fn state. The session daemon returns frame
