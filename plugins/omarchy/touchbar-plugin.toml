@@ -13,10 +13,9 @@ kind = "component"
 entrypoint = "component/plugin.wasm"
 world = "touchbar:plugin/plugin@1.0.0"
 
-# No [[permission]] section. The screensaver is drawing and nothing else: three
-# validated effects, one retained canvas, and host-timed motion. It cannot read
-# the filesystem, the network, or D-Bus, and it never learns the theme's name —
-# only the semantic roles the host resolves for it.
+# The drawing component itself remains isolated. The package also contributes
+# a declarative appearance provider below; touchbar-sessiond reads its one
+# permission-bound palette file and remains the final appearance policy owner.
 
 [[items]]
 id = "screensaver"
@@ -39,3 +38,33 @@ applications = ["org.omarchy.screensaver"]
 # background selection. A future purpose-specific theme-picker namespace can
 # be added here without changing the host-side profile mechanism.
 activities = ["omarchy-image-selector", "theme-change"]
+
+[[appearance-provider]]
+id = "omarchy"
+label = "Omarchy"
+mount = "omarchy-current"
+path = "theme/colors.toml"
+desktop_sessions = ["omarchy"]
+
+[appearance-provider.fields]
+scheme = "mode"
+background = "background"
+foreground = "foreground"
+accent = "accent"
+selection = "selection"
+muted = "muted"
+destructive = "red"
+
+[[permission]]
+capability = "appearance.provide.v1"
+required = false
+reason = "Read the current Omarchy palette and offer it as the global Touch Bar appearance"
+
+[permission.scope]
+providers = ["omarchy"]
+maximum_file_bytes = 65536
+maximum_updates_per_second = 4
+
+[[permission.scope.mounts]]
+label = "omarchy-current"
+suggested_location = "xdg-state:omarchy/current"

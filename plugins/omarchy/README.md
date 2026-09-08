@@ -6,10 +6,12 @@ is wearing the current theme.
 
 ![The animated pixelated Omarchy wordmark in its themed field](../../docs/images/packs/omarchy/screensaver-2008-dark.gif)
 
-**This package requests no capabilities.** It is three validated effects, one
-retained canvas, and host-timed motion. It cannot read the filesystem, the
-network, or D-Bus, and it never learns the theme's name or a single hex value —
-only the semantic roles the host resolves for it at paint time.
+The drawing component remains isolated: three validated effects, one retained
+canvas, and host-timed motion. The package separately requests one optional,
+revocable `appearance.provide.v1` capability for its declarative provider. Its
+scope binds Omarchy's current state directory, one package-local provider ID,
+and strict file-size/update-rate limits. It grants the renderer no generic
+filesystem, network, D-Bus, command, or write access.
 
 ## Items
 
@@ -46,12 +48,20 @@ touchbarctl plugin run \
 omarchy-launch-screensaver force
 ```
 
-For the installed zero-configuration behavior, install and enable the pack:
+For the installed behavior, install the pack, authorize its narrowly scoped
+appearance provider, and enable it:
 
 ```bash
 touchbarctl plugin add --path plugins/omarchy
+touchbarctl plugin permission github:cameroncooper/touchbar-omarchy \
+  appearance.provide.v1 allow --persistent \
+  --bind omarchy-current="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current"
 touchbarctl plugin enable github:cameroncooper/touchbar-omarchy
 ```
+
+This grant is installation consent, not ongoing configuration. A graphical
+installer can present it in its normal confirmation. Revoking it stops the
+provider without disabling the screensaver renderer.
 
 The manifest-provided `screensaver` profile then appears automatically while
 `org.omarchy.screensaver` is focused or Omarchy's
@@ -104,26 +114,22 @@ texture, browser, network access, or literal theme colors.
 
 ## Wearing the Omarchy theme
 
-`touchbar-sessiond` reads `~/.config/touchbar/theme.toml` as flat `key = "value"`
-lines, and takes `mode`, `background`, `foreground`, `accent`, `selection`,
-`muted`, and `red`. An Omarchy theme's `colors.toml` ships exactly those keys, so
-the shortest bridge that works is a symlink:
+The package publishes an `omarchy` appearance-provider contribution for exact
+`DESKTOP_SESSION=omarchy` matches. `touchbar-sessiond` reads only
+`theme/colors.toml` beneath the installer-bound `omarchy-current` directory,
+using symlink-free, beneath-root resolution and a 64 KiB limit. Omarchy can
+replace the complete `theme` directory during `omarchy theme set`; the stable
+parent binding remains valid and the next complete palette is accepted within
+250 ms. A missing or malformed replacement leaves the last valid palette live.
 
-```bash
-ln -sfn ~/.local/state/omarchy/current/theme/colors.toml ~/.config/touchbar/theme.toml
-```
-
-`omarchy theme set` restages that directory, the session daemon notices within
-its 250 ms poll, and the strip recolors with the desktop.
-
-`bridge/touchbar-theme.hook` is the version to ship, and generates the file
-rather than aliasing it — motion policy and animation cadence are the strip's
-business, not the theme's:
-
-```bash
-install -Dm644 plugins/omarchy/bridge/touchbar-theme.hook \
-  ~/.config/omarchy/hooks/theme-set.d/touchbar-theme.hook
-```
+The provider supplies only scheme and semantic colors. The host assigns the
+generation, derives control states, owns motion and animation cadence, applies
+the snapshot atomically, and broadcasts it to every plugin. An explicit
+`TOUCHBAR_THEME` or existing `~/.config/touchbar/theme.toml` remains a higher
+priority user override. No symlink, generated copy, or Omarchy hook is needed.
+If you used the earlier bridge prototype, review and remove only its old
+`~/.config/touchbar/theme.toml` symlink/generated file and theme-set hook;
+otherwise that intentional higher-priority override will continue to win.
 
 This is also what gives the field its identity. `accent` supplies the lit tone,
 `background` pulls it down into dim and mid pixels, and `foreground` lifts it

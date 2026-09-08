@@ -8,21 +8,24 @@ use std::{
 use anyhow::{Context, Result, bail};
 use touchbar_control::ProcessStatus;
 use touchbar_package::{
-    AutomaticProfile, GithubSource, PluginManifest, PresentationBar, PresentationBarElement,
-    PresentationGroupElement, RuntimeSpec,
+    AppearanceProvider, AutomaticProfile, GithubSource, PluginManifest, PresentationBar,
+    PresentationBarElement, PresentationGroupElement, RuntimeSpec,
 };
 use touchbar_plugin_store::{
     InstalledOrigin, InstalledRuntime, PluginStore, StorePaths, inspect_package,
 };
 use touchbar_policy::{
-    CapabilityRegistry, CapabilityRequest, GrantStore, PackageInstance, Provenance, RuntimeKind,
-    SessionGrants, calculate_effective_policy,
+    CapabilityId, CapabilityRegistry, CapabilityRequest, CapabilityScope, EffectivePolicy,
+    FilesystemMountBinding, GrantStore, PackageInstance, Provenance, RuntimeKind, SessionGrants,
+    calculate_effective_policy,
 };
 use touchbar_profile_config::{
     ContributionConfig, PROFILE_CONFIG_VERSION, PredicateConfig, ProfileConfig, ProfileDocument,
     ProfileElementConfig, ProfileItemConfig, ProfileItemRefConfig, ProfileRuleConfig, ScopeConfig,
     SlotPolicyConfig,
 };
+
+use crate::appearance::ProviderSource;
 
 const MAX_AUTOMATIC_RESTARTS: u32 = 8;
 const CHILD_STATUS_INTERVAL: Duration = Duration::from_millis(250);
@@ -140,6 +143,62 @@ pub struct PackagedProfileCatalog {
     enabled_items: Vec<ProfileItemConfig>,
     profiles: Vec<PackagedProfile>,
     manages_default_visibility: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AppearanceProviderCatalog {
+    active: Option<ProviderSource>,
+    declared: usize,
+    eligible: usize,
+}
+
+impl AppearanceProviderCatalog {
+    fn add_manifest(
+        &mut self,
+        manifest: &PluginManifest,
+        policy: Option<&EffectivePolicy>,
+        trusted_components: bool,
+        desktop_sessions: &BTreeSet<String>,
+    ) {
+        self.declared = self
+            .declared
+            .saturating_add(manifest.appearance_providers.len());
+        for provider in &manifest.appearance_providers {
+            if !provider
+                .desktop_sessions
+                .iter()
+                .any(|session| desktop_sessions.contains(session))
+            {
+                continue;
+            }
+            let candidate = if trusted_components {
+                trusted_provider_source(manifest, provider)
+            } else {
+                authorized_provider_source(manifest, provider, policy)
+            };
+            let Some(candidate) = candidate else {
+                continue;
+            };
+            self.eligible = self.eligible.saturating_add(1);
+            if self.active.as_ref().is_none_or(|active| {
+                (&candidate.plugin, &candidate.id) < (&active.plugin, &active.id)
+            }) {
+                self.active = Some(candidate);
+            }
+        }
+    }
+
+    pub fn active(&self) -> Option<ProviderSource> {
+        self.active.clone()
+    }
+
+    pub fn declared_count(&self) -> usize {
+        self.declared
+    }
+
+    pub fn eligible_count(&self) -> usize {
+        self.eligible
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -346,6 +405,136 @@ fn exact_activity_matches(values: &[String]) -> PredicateConfig {
     }
 }
 
+fn desktop_session_identities() -> BTreeSet<String> {
+    [
+        "DESKTOP_SESSION",
+        "XDG_SESSION_DESKTOP",
+        "XDG_CURRENT_DESKTOP",
+    ]
+    .into_iter()
+    .filter_map(std::env::var_os)
+    .flat_map(|value| {
+        value
+            .to_string_lossy()
+            .split([':', ';'])
+            .map(|part| part.trim().to_ascii_lowercase())
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+    })
+    .collect()
+}
+
+fn authorized_provider_source(
+    manifest: &PluginManifest,
+    provider: &AppearanceProvider,
+    policy: Option<&EffectivePolicy>,
+) -> Option<ProviderSource> {
+    let policy = policy?;
+    let appearance = policy.grants.iter().find(|grant| {
+        grant.allows()
+            && grant.request.capability == CapabilityId::AppearanceProvideV1
+            && matches!(
+                &grant.request.scope,
+                CapabilityScope::AppearanceProvide(scope) if scope.providers.contains(&provider.id)
+            )
+    })?;
+    let (maximum_file_bytes, maximum_updates_per_second, mount) = match &appearance.request.scope {
+        CapabilityScope::AppearanceProvide(scope) => (
+            scope.maximum_file_bytes,
+            scope.maximum_updates_per_second,
+            appearance
+                .bindings
+                .filesystem_mounts
+                .get(&provider.mount)?
+                .clone(),
+        ),
+        _ => return None,
+    };
+    Some(provider_source(
+        manifest,
+        provider,
+        mount,
+        maximum_file_bytes,
+        maximum_updates_per_second,
+    ))
+}
+
+fn trusted_provider_source(
+    manifest: &PluginManifest,
+    provider: &AppearanceProvider,
+) -> Option<ProviderSource> {
+    let requests = touchbar_policy::CapabilityRegistry::default()
+        .normalize(manifest)
+        .ok()?;
+    let scope = requests
+        .into_iter()
+        .find_map(|request| match request.scope {
+            CapabilityScope::AppearanceProvide(scope)
+                if scope.providers.contains(&provider.id)
+                    && scope
+                        .mounts
+                        .iter()
+                        .any(|mount| mount.label == provider.mount) =>
+            {
+                Some(scope)
+            }
+            _ => None,
+        })?;
+    let hint = scope
+        .mounts
+        .iter()
+        .find(|mount| mount.label == provider.mount)?
+        .suggested_location
+        .as_deref()?;
+    let path = resolve_development_hint(hint)?;
+    let mount = FilesystemMountBinding::from_directory(path).ok()?;
+    Some(provider_source(
+        manifest,
+        provider,
+        mount,
+        scope.maximum_file_bytes,
+        scope.maximum_updates_per_second,
+    ))
+}
+
+fn resolve_development_hint(hint: &str) -> Option<PathBuf> {
+    let relative = hint.strip_prefix("xdg-state:")?;
+    let relative = Path::new(relative);
+    if relative.as_os_str().is_empty()
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    let root = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
+        })?;
+    Some(root.join(relative))
+}
+
+fn provider_source(
+    manifest: &PluginManifest,
+    provider: &AppearanceProvider,
+    mount: FilesystemMountBinding,
+    maximum_file_bytes: u64,
+    maximum_updates_per_second: u16,
+) -> ProviderSource {
+    ProviderSource {
+        plugin: manifest.plugin.source.to_string(),
+        id: provider.id.clone(),
+        label: provider.label.clone(),
+        mount,
+        path: PathBuf::from(&provider.path),
+        fields: provider.fields.clone(),
+        maximum_file_bytes,
+        maximum_updates_per_second,
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct ItemBars {
     expanded: Option<String>,
@@ -453,6 +642,7 @@ pub struct PluginManager {
     processes: BTreeMap<Key, Managed>,
     presentations: PresentationCatalog,
     profiles: PackagedProfileCatalog,
+    appearance_providers: AppearanceProviderCatalog,
     next_policy_refresh: Instant,
     trusted_components: bool,
 }
@@ -473,6 +663,7 @@ impl PluginManager {
             processes: BTreeMap::new(),
             presentations: PresentationCatalog::default(),
             profiles: PackagedProfileCatalog::default(),
+            appearance_providers: AppearanceProviderCatalog::default(),
             next_policy_refresh: Instant::now(),
             trusted_components,
         };
@@ -482,7 +673,8 @@ impl PluginManager {
 
     pub fn reload(&mut self) -> Result<()> {
         let store = PluginStore::open(self.paths.clone())?;
-        let (desired, presentations, profiles) = desired_state(&store, self.trusted_components)?;
+        let (desired, presentations, profiles, appearance_providers) =
+            desired_state(&store, self.trusted_components)?;
         let old = std::mem::take(&mut self.processes);
         for (key, mut process) in old {
             if desired
@@ -523,6 +715,12 @@ impl PluginManager {
         }
         self.presentations = presentations;
         self.profiles = profiles;
+        println!(
+            "appearance-provider-catalog declared={} eligible={}",
+            appearance_providers.declared_count(),
+            appearance_providers.eligible_count()
+        );
+        self.appearance_providers = appearance_providers;
         self.refresh_permission_states();
         Ok(())
     }
@@ -609,6 +807,10 @@ impl PluginManager {
         &self.profiles
     }
 
+    pub fn appearance_provider(&self) -> Option<ProviderSource> {
+        self.appearance_providers.active()
+    }
+
     pub fn unavailable_reason(&self, qualified_item: &str) -> Option<UnavailableReason> {
         let (source, item) = qualified_item.rsplit_once('#')?;
         let process = self.processes.get(&Key {
@@ -657,10 +859,16 @@ fn desired_state(
     BTreeMap<Key, Desired>,
     PresentationCatalog,
     PackagedProfileCatalog,
+    AppearanceProviderCatalog,
 )> {
     let mut output = BTreeMap::new();
     let mut presentations = PresentationCatalog::default();
     let mut profiles = PackagedProfileCatalog::default();
+    let mut appearance_providers = AppearanceProviderCatalog::default();
+    let persistent_grants = GrantStore::load(&store.paths().grants).unwrap_or_default();
+    let session_store = GrantStore::load(&store.paths().session_grants).unwrap_or_default();
+    let session_grants = SessionGrants::from_records(session_store.records()).unwrap_or_default();
+    let desktop_sessions = desktop_session_identities();
     for installed in store.plugins().filter(|plugin| plugin.enabled) {
         let package_path = store.package_path(installed)?;
         let inspected = inspect_package(&package_path)
@@ -766,6 +974,21 @@ fn desired_state(
             })
         })
         .transpose()?;
+        let effective_policy = policy.as_ref().map(|policy| {
+            calculate_effective_policy(
+                &policy.package,
+                &policy.requests,
+                &persistent_grants,
+                &session_grants,
+                &CapabilityRegistry::default(),
+            )
+        });
+        appearance_providers.add_manifest(
+            &inspected.manifest,
+            effective_policy.as_ref(),
+            trusted_components,
+            &desktop_sessions,
+        );
         for item in installed.items.iter().filter(|item| item.enabled) {
             let key = Key {
                 source: installed.source.to_string(),
@@ -785,7 +1008,7 @@ fn desired_state(
             }
         }
     }
-    Ok((output, presentations, profiles))
+    Ok((output, presentations, profiles, appearance_providers))
 }
 
 fn start(supervisor: &Path, host: &Path, paths: &StorePaths, display: &str, process: &mut Managed) {
@@ -911,7 +1134,9 @@ fn current_target() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use touchbar_model::{ContextSnapshot, ContextValue};
+    use touchbar_policy::{Decision, GrantBindings, GrantRecord, ReusePolicy};
 
     fn managed() -> Managed {
         Managed {
@@ -1110,5 +1335,125 @@ activities = ["theme-change"]
         let document = catalog.merge(None).unwrap().unwrap();
         assert_eq!(document.contributions[0].items[0].item, "palette");
         assert_eq!(document.contributions[1].items[0].item, "screensaver");
+    }
+
+    #[test]
+    fn appearance_provider_requires_its_grant_and_an_exact_desktop_match() {
+        let manifest = PluginManifest::from_toml(
+            r#"manifest_version = 1
+[plugin]
+name = "Omarchy"
+version = "0.1.0"
+description = "Test"
+license = "MIT"
+source = "github:owner/omarchy"
+api = "^1.0"
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+[[items]]
+id = "screensaver"
+label = "Screensaver"
+[[appearance-provider]]
+id = "omarchy"
+label = "Omarchy"
+mount = "omarchy-current"
+path = "theme/colors.toml"
+desktop_sessions = ["omarchy"]
+[[permission]]
+capability = "appearance.provide.v1"
+required = false
+reason = "Provide colors"
+[permission.scope]
+providers = ["omarchy"]
+maximum_file_bytes = 65536
+maximum_updates_per_second = 4
+[[permission.scope.mounts]]
+label = "omarchy-current"
+suggested_location = "xdg-state:omarchy/current"
+"#,
+        )
+        .unwrap();
+        let requests = CapabilityRegistry::default().normalize(&manifest).unwrap();
+        let package = PackageInstance {
+            source: manifest.plugin.source.clone(),
+            version: manifest.plugin.version.clone(),
+            digest: format!("sha256:{}", "a".repeat(64)),
+            provenance: Provenance::LocalDevelopment,
+            runtime: RuntimeKind::Component,
+        };
+        let mut catalog = AppearanceProviderCatalog::default();
+        let no_grants = calculate_effective_policy(
+            &package,
+            &requests,
+            &GrantStore::default(),
+            &SessionGrants::default(),
+            &CapabilityRegistry::default(),
+        );
+        catalog.add_manifest(
+            &manifest,
+            Some(&no_grants),
+            false,
+            &BTreeSet::from(["omarchy".into()]),
+        );
+        assert!(catalog.active().is_none());
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let grants_path = root.path().join("permissions.toml");
+        for request in &requests {
+            let bindings = match &request.scope {
+                CapabilityScope::AppearanceProvide(_) => GrantBindings {
+                    filesystem_mounts: BTreeMap::from([(
+                        "omarchy-current".into(),
+                        FilesystemMountBinding::from_directory(root.path()).unwrap(),
+                    )]),
+                    ..GrantBindings::default()
+                },
+                _ => GrantBindings::default(),
+            };
+            GrantStore::update_record(
+                &grants_path,
+                GrantRecord {
+                    source: package.source.clone(),
+                    capability: request.capability.clone(),
+                    approved_scope: request.scope.clone(),
+                    bindings,
+                    decision: Decision::Allow,
+                    reuse: ReusePolicy::ExactDigest,
+                    approved_version: package.version.clone(),
+                    approved_digest: package.digest.clone(),
+                },
+            )
+            .unwrap();
+        }
+        let grants = GrantStore::load(grants_path).unwrap();
+        let authorized = calculate_effective_policy(
+            &package,
+            &requests,
+            &grants,
+            &SessionGrants::default(),
+            &CapabilityRegistry::default(),
+        );
+        let mut catalog = AppearanceProviderCatalog::default();
+        catalog.add_manifest(
+            &manifest,
+            Some(&authorized),
+            false,
+            &BTreeSet::from(["omarchy".into()]),
+        );
+        let active = catalog.active().unwrap();
+        assert_eq!(active.plugin, "github:owner/omarchy");
+        assert_eq!(active.id, "omarchy");
+
+        let mut wrong_desktop = AppearanceProviderCatalog::default();
+        wrong_desktop.add_manifest(
+            &manifest,
+            Some(&authorized),
+            false,
+            &BTreeSet::from(["gnome".into()]),
+        );
+        assert!(wrong_desktop.active().is_none());
     }
 }

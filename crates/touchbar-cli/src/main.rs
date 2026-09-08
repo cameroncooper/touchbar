@@ -399,7 +399,7 @@ fn context(args: &[String]) -> Result<()> {
             serde_json::to_string_pretty(&json!({
                 "manifest_version": 1, "host_api": touchbar_package::SUPPORTED_HOST_API_VERSION, "component_world": touchbar_package::SUPPORTED_COMPONENT_WORLD,
                 "commands": ["new", "build", "context", "check", "test", "replay", "dev", "run", "pack", "release-check", "publish", "add", "update", "rollback", "search", "catalog-check", "submit", "list", "inspect", "permissions", "permission", "enable", "disable", "item", "profile", "remove"],
-                "principles": ["stable item ids", "responsive rendering through 2008 pixels", "package-local automatic profiles", "package-local presentation bars", "presentation width matrices", "theme roles", "sealed logical assets", "semantic image tint", "stable animation ids", "host-timed animations", "bounded validated GPU effects", "brokered capabilities", "scope-checked offline broker fixtures", "headless tests"]
+                "principles": ["stable item ids", "responsive rendering through 2008 pixels", "package-local automatic profiles", "permission-scoped appearance providers", "package-local presentation bars", "presentation width matrices", "theme roles", "sealed logical assets", "semantic image tint", "stable animation ids", "host-timed animations", "bounded validated GPU effects", "brokered capabilities", "scope-checked offline broker fixtures", "headless tests"]
             }))?
         ),
     }
@@ -415,7 +415,9 @@ fn check(args: &[String]) -> Result<()> {
             serde_json::to_string_pretty(&json!({
                 "ok": true, "source": package.manifest.plugin.source, "version": package.manifest.plugin.version,
                 "runtime": if matches!(&package.manifest.runtime, RuntimeSpec::Component { .. }) { "component" } else { "native" },
-                "items": package.manifest.items, "profiles": package.manifest.profiles, "permissions": package.requests,
+                "items": package.manifest.items, "profiles": package.manifest.profiles,
+                "appearance_providers": package.manifest.appearance_providers,
+                "permissions": package.requests,
                 "package_digest": package.package_digest, "artifacts": package.artifacts
             }))?
         ),
@@ -425,9 +427,10 @@ fn check(args: &[String]) -> Result<()> {
                 package.manifest.plugin.source, package.manifest.plugin.version
             );
             println!(
-                "    {} item(s), {} automatic profile(s), {} permission request(s)",
+                "    {} item(s), {} automatic profile(s), {} appearance provider(s), {} permission request(s)",
                 package.manifest.items.len(),
                 package.manifest.profiles.len(),
+                package.manifest.appearance_providers.len(),
                 package.requests.len()
             );
             println!("    {}", package.package_digest);

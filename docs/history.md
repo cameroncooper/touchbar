@@ -9,6 +9,26 @@ Commands and paths below are historical and may predate later renames.
 
 ---
 
+## Permission-scoped appearance providers
+
+Plugin packages may now contribute declarative `[[appearance-provider]]`
+sources. A provider becomes eligible only when its exact desktop session
+matches and the package has a bounded `appearance.provide.v1` grant for its
+source mount and provider ID. The purpose-specific mount is never exposed as
+generic filesystem access to rendering code.
+`touchbar-sessiond` securely reopens the granted root on every read, rejects
+symlinks, mount crossings, oversized or malformed palettes, retains the last
+valid generation during an incomplete replacement, and remains the sole owner
+of source selection and atomic appearance publication.
+
+The Omarchy pack uses this contract for
+`~/.local/state/omarchy/current/theme/colors.toml`. Because Omarchy replaces
+the `theme` directory, the permission binds the stable `current` parent. The
+old symlink/generated-hook bridge is gone; explicit `TOUCHBAR_THEME` and user
+`theme.toml` files still take precedence.
+
+---
+
 ## Disposable physical plugin development
 
 `touchbarctl plugin run` now gives a local package a disposable compositor

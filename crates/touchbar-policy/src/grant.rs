@@ -225,6 +225,11 @@ impl GrantRecord {
                     _ => None,
                 })
                 .collect::<BTreeSet<_>>(),
+            CapabilityScope::AppearanceProvide(scope) => scope
+                .mounts
+                .iter()
+                .map(|mount| mount.label.as_str())
+                .collect::<BTreeSet<_>>(),
             _ => BTreeSet::new(),
         };
         let actual_filesystem = self

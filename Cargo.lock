@@ -3610,6 +3610,7 @@ dependencies = [
  "libc",
  "memmap2",
  "tempfile",
+ "toml",
  "touchbar-control",
  "touchbar-layout",
  "touchbar-model",

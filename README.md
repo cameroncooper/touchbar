@@ -6,7 +6,7 @@ Touch Bar, and a sandboxed plugin system for putting your own things on it.
 [![CI](https://github.com/cameroncooper/touchbar/actions/workflows/ci.yml/badge.svg)](https://github.com/cameroncooper/touchbar/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-![The Touch Bar showing now-playing artwork, a track title, and a themed waveform](docs/images/packs/media/now-playing-2008-dark.png)
+![The animated pixelated Omarchy wordmark sweeping across the Touch Bar](docs/images/packs/omarchy/screensaver-2008-dark.gif)
 
 Plugins are WebAssembly components. They reach the desktop only through
 capabilities you grant one at a time, scoped to an exact path, origin, D-Bus

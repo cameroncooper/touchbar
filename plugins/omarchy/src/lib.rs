@@ -18,7 +18,9 @@
 //! set` recolors both the drawing and the running shader without this code
 //! rendering again. `palette` exists to make that visible in one glance.
 //!
-//! The package requests no capabilities at all.
+//! The drawing component requests no broker access. The package's optional
+//! appearance-provider permission is consumed entirely by the session daemon;
+//! it never exposes the palette file or its literal values to this code.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -401,7 +403,7 @@ fn drift(width: f32) -> f32 {
 }
 
 /// Every semantic role the host resolves, side by side. Point it at a strip,
-/// run `omarchy theme set`, and the bridge either works or visibly does not.
+/// run `omarchy theme set`, and the provider either works or visibly does not.
 fn palette(width: f32) -> View {
     let mut b = ViewBuilder::new();
     let roles = [

@@ -9,13 +9,13 @@ use semver::Version;
 use tempfile::tempdir;
 use touchbar_package::{GithubSource, PluginManifest};
 use touchbar_policy::{
-    CapabilityId, CapabilityRegistry, CapabilityRequest, CapabilityScope, CapabilityStatus,
-    CommandArgument, CommandRule, CommandRunScope, DbusArgumentConstraint, DbusBus, DbusCallRule,
-    DbusCallScope, Decision, EffectivePolicy, FilesystemMountBinding, FilesystemMountRequest,
-    FilesystemReadScope, GrantRecord, GrantStore, HttpMethod, HttpOriginRule, HttpRequestScope,
-    PackageInstance, PermissionChangeKind, Provenance, ReusePolicy, RiskClass, RuntimeKind,
-    SessionGrants, UriOpenScope, calculate_effective_policy, diff_permissions,
-    normalize_manifest_permissions, summarize_trust, validate_capability_scope,
+    AppearanceProvideScope, CapabilityId, CapabilityRegistry, CapabilityRequest, CapabilityScope,
+    CapabilityStatus, CommandArgument, CommandRule, CommandRunScope, DbusArgumentConstraint,
+    DbusBus, DbusCallRule, DbusCallScope, Decision, EffectivePolicy, FilesystemMountBinding,
+    FilesystemMountRequest, FilesystemReadScope, GrantRecord, GrantStore, HttpMethod,
+    HttpOriginRule, HttpRequestScope, PackageInstance, PermissionChangeKind, Provenance,
+    ReusePolicy, RiskClass, RuntimeKind, SessionGrants, UriOpenScope, calculate_effective_policy,
+    diff_permissions, normalize_manifest_permissions, summarize_trust, validate_capability_scope,
 };
 
 fn source() -> GithubSource {
@@ -203,6 +203,47 @@ maximum_updates_per_second = 4
     assert_eq!(requests[1].capability, CapabilityId::HttpRequestV1);
     assert_eq!(requests[1].reason, "Read public playback metadata");
     assert!(matches!(requests[1].scope, CapabilityScope::HttpRequest(_)));
+}
+
+#[test]
+fn appearance_provider_permission_is_controlling_and_scope_bounded() {
+    let manifest = manifest_with_permissions(
+        r#"
+[[permission]]
+capability = "appearance.provide.v1"
+required = false
+reason = "Provide desktop colors"
+[permission.scope]
+providers = ["desktop-theme"]
+maximum_file_bytes = 65536
+maximum_updates_per_second = 4
+[[permission.scope.mounts]]
+label = "desktop-state"
+suggested_location = "xdg-state:example/current"
+"#,
+    );
+    let requests = normalize_manifest_permissions(&manifest).unwrap();
+    assert_eq!(requests[0].capability, CapabilityId::AppearanceProvideV1);
+    assert_eq!(
+        requests[0].scope.risk(&requests[0].capability),
+        RiskClass::Controlling
+    );
+    let CapabilityScope::AppearanceProvide(scope) = &requests[0].scope else {
+        panic!("expected appearance provider scope")
+    };
+    assert!(scope.providers.contains("desktop-theme"));
+
+    let narrower = CapabilityScope::AppearanceProvide(AppearanceProvideScope {
+        providers: BTreeSet::from(["desktop-theme".into()]),
+        mounts: BTreeSet::from([FilesystemMountRequest {
+            label: "desktop-state".into(),
+            suggested_location: None,
+        }]),
+        maximum_file_bytes: 32 * 1024,
+        maximum_updates_per_second: 2,
+    });
+    assert!(narrower.is_subset_of(&requests[0].scope));
+    assert!(!requests[0].scope.is_subset_of(&narrower));
 }
 
 #[test]
@@ -1028,7 +1069,7 @@ fn grant_store_rejects_invalid_typed_authority() {
 #[test]
 fn registry_and_effective_policy_are_machine_readable() {
     let registry = CapabilityRegistry::default();
-    assert_eq!(registry.supported().count(), 13);
+    assert_eq!(registry.supported().count(), 14);
     assert!(registry.supports(&CapabilityId::HttpRequestV1));
     let omitted = "input.synthesize.v1".parse::<CapabilityId>().unwrap();
     assert!(!omitted.is_known());

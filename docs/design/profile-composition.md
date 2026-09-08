@@ -208,7 +208,7 @@ and compositor restarts are nonfatal: the source
 reconnects without restarting plugins or discarding profile state. The same
 transactional controller defers context changes, manual selection, item
 arrival/removal, and configuration replacement until captured gestures end.
-An accepted appearance-file change also raises the host-owned
+An accepted user-file or appearance-provider change also raises the host-owned
 `activity.theme-change` fact for two seconds. A theme integration can use that
 bounded tail to display its newly resolved palette after a picker layer closes.
 

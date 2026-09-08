@@ -626,9 +626,10 @@ impl State {
         live_profiles: Option<LiveProfiles>,
         user_profile_document: Option<ProfileDocument>,
         profile_path: Option<PathBuf>,
+        appearance_provider: Option<appearance::ProviderSource>,
         system_bar: bool,
     ) -> Result<Self> {
-        let appearance_source = AppearanceSource::discover();
+        let appearance_source = AppearanceSource::discover(appearance_provider);
         let power_source = PowerSource::discover();
         gpu.set_background_color(Self::gpu_color(appearance_source.snapshot().background));
         // The canvas follows the attached panel; a presenter that already
@@ -783,6 +784,24 @@ impl State {
         let Some(snapshot) = self.appearance_source.poll() else {
             return Ok(false);
         };
+        self.apply_appearance(snapshot, true)
+    }
+
+    fn set_appearance_provider(
+        &mut self,
+        provider: Option<appearance::ProviderSource>,
+    ) -> Result<bool> {
+        let Some(snapshot) = self.appearance_source.set_provider(provider) else {
+            return Ok(false);
+        };
+        self.apply_appearance(snapshot, true)
+    }
+
+    fn apply_appearance(
+        &mut self,
+        snapshot: AppearanceSnapshot,
+        announce_activity: bool,
+    ) -> Result<bool> {
         self.appearances.retain(|_, resource| resource.is_alive());
         self.appearances
             .values()
@@ -792,11 +811,14 @@ impl State {
         self.refresh_system_scene()?;
         self.refresh_plugin_placeholder_scene()?;
         self.scene_dirty = true;
-        self.theme_change_activity_until = Some(Instant::now() + THEME_CHANGE_ACTIVITY_DURATION);
-        self.handle_context_event(ContextEvent {
-            key: "activity.theme-change".into(),
-            value: ContextValue::Boolean(true),
-        })?;
+        if announce_activity {
+            self.theme_change_activity_until =
+                Some(Instant::now() + THEME_CHANGE_ACTIVITY_DURATION);
+            self.handle_context_event(ContextEvent {
+                key: "activity.theme-change".into(),
+                value: ContextValue::Boolean(true),
+            })?;
+        }
         Ok(true)
     }
 
@@ -4330,6 +4352,9 @@ fn main() -> Result<()> {
         live_profiles,
         user_profile_document,
         profile_path,
+        plugin_manager
+            .as_ref()
+            .and_then(plugins::PluginManager::appearance_provider),
         args.system_bar,
     )?;
     if let Some(manager) = &plugin_manager {
@@ -4391,6 +4416,7 @@ fn main() -> Result<()> {
                             state.set_presentation_catalog(manager.presentation_catalog().clone());
                             state
                                 .set_packaged_profile_catalog(manager.profile_catalog().clone())?;
+                            state.set_appearance_provider(manager.appearance_provider())?;
                         }
                         state.reload_profiles().context("reload profiles")?;
                         Ok("runtime configuration reloaded")

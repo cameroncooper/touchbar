@@ -8,9 +8,9 @@ mod grant;
 mod store;
 
 pub use capability::{
-    CapabilityId, CapabilityRegistry, CapabilityRequest, CapabilityScope, CapabilityStatus,
-    ClipboardScope, CommandArgument, CommandRule, CommandRunScope, ContextReadScope,
-    DbusArgumentConstraint, DbusBus, DbusCallRule, DbusCallScope, DbusSignalRule,
+    AppearanceProvideScope, CapabilityId, CapabilityRegistry, CapabilityRequest, CapabilityScope,
+    CapabilityStatus, ClipboardScope, CommandArgument, CommandRule, CommandRunScope,
+    ContextReadScope, DbusArgumentConstraint, DbusBus, DbusCallRule, DbusCallScope, DbusSignalRule,
     DbusSubscribeScope, FileKind, FilesystemMountRequest, FilesystemReadScope,
     FilesystemWriteScope, HttpMethod, HttpOriginRule, HttpRequestScope, LocalConnectScope,
     LocalEndpointRequest, NormalizationError, NotificationScope, NotificationUrgency, RiskClass,

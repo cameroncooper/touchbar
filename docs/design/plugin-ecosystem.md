@@ -74,11 +74,13 @@ screenshots/
 - version, description, license, authors, and host API requirement;
 - component world and artifact, or target-specific native artifacts;
 - multiple stable item contributions;
+- declarative appearance providers with exact desktop matching, a
+  permission-bound source mount, and package-local color-key mapping;
 - bounded package-local presentation bars, with container sizing, ordered
   item/space elements, presentation sizing per item, an optional principal,
   compositor-managed selection dismissal, and per-item tap/hold references;
 - required and optional capability requests with human-readable reasons and
-  scopes.
+  scopes;
 - typed PNG and symbolic-SVG assets with stable logical IDs, exact decoded
   dimensions, and host-applied semantic tint.
 
@@ -97,6 +99,8 @@ Capabilities are general mechanisms with narrow scopes:
 - named secret access without the ambient environment;
 - notifications, time, timers, and bounded local IPC;
 - compositor-owned system and focus context.
+- permission-scoped global Touch Bar appearance proposals; the compositor
+  retains source selection and snapshot ownership.
 
 Generic input synthesis has no v1 schema. A future named-action design must be
 implemented and reviewed as new controlling authority before it enters this

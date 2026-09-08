@@ -39,6 +39,7 @@ pub const MAX_PRESENTATION_BAR_ELEMENTS: usize = 64;
 pub const MAX_AUTOMATIC_PROFILES: usize = 64;
 pub const MAX_AUTOMATIC_PROFILE_ITEMS: usize = 64;
 pub const MAX_AUTOMATIC_PROFILE_CONTEXTS: usize = 64;
+pub const MAX_APPEARANCE_PROVIDERS: usize = 8;
 pub const MAX_LOCAL_ID_BYTES: usize = 64;
 /// Groups are deliberately shallow: the compositor can resolve their complete
 /// geometry without turning an untrusted manifest into an unbounded tree walk.
@@ -58,6 +59,8 @@ pub struct PluginManifest {
     pub bars: Vec<PresentationBar>,
     #[serde(default, rename = "profile")]
     pub profiles: Vec<AutomaticProfile>,
+    #[serde(default, rename = "appearance-provider")]
+    pub appearance_providers: Vec<AppearanceProvider>,
     #[serde(default, rename = "asset")]
     pub assets: Vec<AssetDefinition>,
     #[serde(default, rename = "permission")]
@@ -185,6 +188,53 @@ impl PluginManifest {
                 &format!("{prefix}.activities"),
                 &profile.activities,
             );
+        }
+
+        if self.appearance_providers.len() > MAX_APPEARANCE_PROVIDERS {
+            issues.push(ValidationIssue::new(
+                "appearance-provider",
+                format!(
+                    "a package may declare at most {MAX_APPEARANCE_PROVIDERS} appearance providers"
+                ),
+            ));
+        }
+        let mut provider_ids = BTreeSet::new();
+        for (index, provider) in self.appearance_providers.iter().enumerate() {
+            let prefix = format!("appearance-provider[{index}]");
+            validate_kebab_id(&mut issues, &format!("{prefix}.id"), &provider.id);
+            validate_nonempty(&mut issues, &format!("{prefix}.label"), &provider.label);
+            validate_kebab_id(&mut issues, &format!("{prefix}.mount"), &provider.mount);
+            validate_relative_path(&mut issues, &format!("{prefix}.path"), &provider.path);
+            if !provider_ids.insert(&provider.id) {
+                issues.push(ValidationIssue::new(
+                    format!("{prefix}.id"),
+                    "duplicate appearance provider id",
+                ));
+            }
+            if provider.desktop_sessions.is_empty() {
+                issues.push(ValidationIssue::new(
+                    format!("{prefix}.desktop_sessions"),
+                    "must contain at least one exact desktop session identity",
+                ));
+            }
+            validate_context_identities(
+                &mut issues,
+                &format!("{prefix}.desktop_sessions"),
+                &provider.desktop_sessions,
+            );
+            for (field, key) in provider.fields.entries() {
+                if key.is_empty()
+                    || key.len() > MAX_LOCAL_ID_BYTES
+                    || !key
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                {
+                    issues.push(ValidationIssue::new(
+                        format!("{prefix}.fields.{field}"),
+                        "must be a non-empty flat TOML key containing only ASCII letters, digits, '-' or '_'",
+                    ));
+                }
+            }
         }
 
         if self.bars.len() > MAX_PRESENTATION_BARS {
@@ -629,6 +679,63 @@ pub struct AutomaticProfile {
     pub activities: Vec<String>,
     #[serde(default = "default_true")]
     pub enabled_by_default: bool,
+}
+
+/// A package-owned source of semantic Touch Bar colors.
+///
+/// The session daemon, rather than plugin code, reads this bounded file through
+/// an installer-owned filesystem mount binding. `appearance.provide.v1`
+/// separately controls whether the resulting palette may become global.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppearanceProvider {
+    pub id: String,
+    pub label: String,
+    pub mount: String,
+    pub path: String,
+    pub desktop_sessions: Vec<String>,
+    #[serde(default)]
+    pub fields: AppearanceProviderFields,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AppearanceProviderFields {
+    pub scheme: String,
+    pub background: String,
+    pub foreground: String,
+    pub accent: String,
+    pub selection: String,
+    pub muted: String,
+    pub destructive: String,
+}
+
+impl Default for AppearanceProviderFields {
+    fn default() -> Self {
+        Self {
+            scheme: "mode".into(),
+            background: "background".into(),
+            foreground: "foreground".into(),
+            accent: "accent".into(),
+            selection: "selection".into(),
+            muted: "muted".into(),
+            destructive: "red".into(),
+        }
+    }
+}
+
+impl AppearanceProviderFields {
+    fn entries(&self) -> [(&'static str, &str); 7] {
+        [
+            ("scheme", &self.scheme),
+            ("background", &self.background),
+            ("foreground", &self.foreground),
+            ("accent", &self.accent),
+            ("selection", &self.selection),
+            ("muted", &self.muted),
+            ("destructive", &self.destructive),
+        ]
+    }
 }
 
 fn default_true() -> bool {
@@ -1190,6 +1297,21 @@ fn validate_package_path(issues: &mut Vec<ValidationIssue>, field: &str, value: 
     }
 }
 
+fn validate_relative_path(issues: &mut Vec<ValidationIssue>, field: &str, value: &str) {
+    let path = Path::new(value);
+    let valid = !value.is_empty()
+        && !value.contains('\\')
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)));
+    if !valid {
+        issues.push(ValidationIssue::new(
+            field,
+            "must be a normalized relative path contained within the granted mount",
+        ));
+    }
+}
+
 fn validate_world(issues: &mut Vec<ValidationIssue>, world: &str) {
     if world != SUPPORTED_COMPONENT_WORLD {
         issues.push(ValidationIssue::new(
@@ -1622,6 +1744,7 @@ maximum_width = 80
                 principal_item: None,
             }],
             profiles: Vec::new(),
+            appearance_providers: Vec::new(),
             assets: Vec::new(),
             permissions: Vec::new(),
         };
@@ -1665,6 +1788,36 @@ maximum_width = 80
                 .0
                 .iter()
                 .any(|issue| issue.field == "permission[0].reason")
+        );
+    }
+
+    #[test]
+    fn appearance_provider_is_bounded_and_defaults_to_canonical_palette_keys() {
+        let source = format!(
+            r#"{COMPONENT}
+
+[[appearance-provider]]
+id = "desktop-theme"
+label = "Desktop theme"
+mount = "desktop-state"
+path = "current/theme/colors.toml"
+desktop_sessions = ["example-desktop"]
+"#
+        );
+        let manifest = PluginManifest::from_toml(&source).unwrap();
+        let provider = &manifest.appearance_providers[0];
+        assert_eq!(provider.fields, AppearanceProviderFields::default());
+        assert_eq!(provider.path, "current/theme/colors.toml");
+
+        let invalid = source.replace(
+            "path = \"current/theme/colors.toml\"",
+            "path = \"../private.toml\"",
+        );
+        assert!(
+            PluginManifest::from_toml(&invalid)
+                .unwrap_err()
+                .to_string()
+                .contains("granted mount")
         );
     }
 

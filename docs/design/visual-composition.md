@@ -66,10 +66,23 @@ division keeps all plugins visually consistent by default without making the
 UI kit responsible for filesystem discovery or giving different SDKs
 different theme policy.
 
-The current source is `TOUCHBAR_THEME` when set, otherwise
-`~/.config/touchbar/theme.toml`, otherwise a built-in dark palette. The daemon
-polls an active file for changes and publishes a new
-atomic generation.
+Source selection is host policy. `TOUCHBAR_THEME` has highest precedence,
+followed by an existing `~/.config/touchbar/theme.toml`, an eligible installed
+appearance provider, and finally the built-in dark palette. A package declares
+an `[[appearance-provider]]` with an exact desktop-session matcher, one
+permission-bound source mount and a relative TOML path. The provider is usable
+only while `appearance.provide.v1` authorizes both that mount and its
+package-local provider ID. This purpose-specific binding is not a generic
+filesystem capability available to rendering code.
+
+The daemon securely reopens the installer-bound root, verifies its device and
+inode, and resolves the source without symlinks, parent traversal, magic links,
+or mount crossings. It accepts only complete bounded palettes and retains the
+last valid snapshot through incomplete atomic replacements. Providers supply
+scheme and semantic colors; the host owns motion, cadence, derived control
+roles, generation assignment, arbitration, and atomic publication. Revoking
+the grant removes the provider from selection without disabling its drawing
+items.
 
 ## Context transactions
 

@@ -254,6 +254,7 @@ describes the real normalized scope and risks.
 | `notification.send.v1` | Categories, actions, urgency, and rate | Host labels the originating plugin; no spoofed system identity. |
 | `uri.open.v1` | Schemes and optional origin set | Requires activation; forbids dangerous or unsupported schemes. |
 | `local.connect.v1` | Exact user-approved Unix endpoints and protocol label | No arbitrary socket namespace or descriptor passing; classified as broad unless a protocol adapter narrows operations. |
+| `appearance.provide.v1` | Exact package-local provider IDs, installer-bound palette roots, file size, and update rate | Authorizes bounded palette observation/proposals only; its mounts are not exposed to renderer code, and the compositor owns provider selection, validation, motion policy, derived roles, and atomic generations. |
 
 Clipboard, secret, context, URI, notification, and input operations should use
 desktop portals when a suitable portal actually supplies the needed authority
@@ -276,6 +277,13 @@ ContextReadScope {
 FilesystemMountRequest {
   label: kebab-id,
   suggested_location: option<xdg-directory-or-display-hint>,
+}
+
+AppearanceProvideScope {
+  providers: set<package-local-provider-id>,
+  mounts: set<FilesystemMountRequest>,
+  maximum_file_bytes: u64,
+  maximum_updates_per_second: u16,
 }
 
 FilesystemReadScope {

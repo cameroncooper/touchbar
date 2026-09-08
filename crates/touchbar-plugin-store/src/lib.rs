@@ -1159,6 +1159,7 @@ pub fn sdk_context_markdown() -> String {
             "- Assets: declare bounded PNG or symbolic SVG files under `assets/`; render only by logical ID and use semantic mask/multiply tint\n",
             "- Presentations: declare package-local bars with container and per-item sizing; request them from input callbacks and handle compositor lifecycle events\n",
             "- Automatic profiles: declare package-local `[[profile]]` entries with exact lowercase `applications` and/or `activities`; use `show_in_default_profile = false` for contextual-only items; user rules retain precedence\n",
+            "- Appearance providers: declare a package-local `[[appearance-provider]]` with exact lowercase `desktop_sessions`, a relative palette path, and an `appearance.provide.v1` request for its logical installer-bound mount; explicit user themes retain precedence\n",
             "- Packages: stable item IDs, normalized relative artifact paths, no symlinks\n",
             "- Test widths: 80, 160, 320, 1004, and {MAX_TOUCHBAR_WIDTH} pixels at 60 pixels high plus every presentation width\n",
             "- Deterministic interaction: `touchbarctl plugin replay --scenario tests/interaction.json`; add `--screenshots DIR` for named GPU PNGs; use exact scope-checked D-Bus, HTTP, command, filesystem-read, local-service, notification, URI-open, clipboard, and secret-read fixtures for offline integration state; commit synthetic secret values only\n",

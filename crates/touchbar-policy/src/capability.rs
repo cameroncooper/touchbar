@@ -37,6 +37,8 @@ pub enum CapabilityId {
     UriOpenV1,
     #[serde(rename = "local.connect.v1")]
     LocalConnectV1,
+    #[serde(rename = "appearance.provide.v1")]
+    AppearanceProvideV1,
     #[serde(untagged)]
     Unknown(String),
 }
@@ -69,6 +71,7 @@ impl CapabilityRegistry {
                 CapabilityId::NotificationSendV1,
                 CapabilityId::UriOpenV1,
                 CapabilityId::LocalConnectV1,
+                CapabilityId::AppearanceProvideV1,
             ]),
         }
     }
@@ -117,6 +120,7 @@ impl fmt::Display for CapabilityId {
             Self::NotificationSendV1 => "notification.send.v1",
             Self::UriOpenV1 => "uri.open.v1",
             Self::LocalConnectV1 => "local.connect.v1",
+            Self::AppearanceProvideV1 => "appearance.provide.v1",
             Self::Unknown(value) => value,
         })
     }
@@ -140,6 +144,7 @@ impl FromStr for CapabilityId {
             "notification.send.v1" => Self::NotificationSendV1,
             "uri.open.v1" => Self::UriOpenV1,
             "local.connect.v1" => Self::LocalConnectV1,
+            "appearance.provide.v1" => Self::AppearanceProvideV1,
             _ if valid_dotted_id(value) => Self::Unknown(value.into()),
             _ => return Err("capability must be a lowercase dotted identifier".into()),
         };
@@ -207,6 +212,7 @@ pub enum CapabilityScope {
     NotificationSend(NotificationScope),
     UriOpen(UriOpenScope),
     LocalConnect(LocalConnectScope),
+    AppearanceProvide(AppearanceProvideScope),
     Unknown(String),
 }
 
@@ -556,6 +562,29 @@ pub struct LocalConnectScope {
     pub maximum_bytes_per_minute: u64,
 }
 
+/// Authority to offer named package appearance providers to the compositor.
+/// The compositor remains responsible for source selection, validation, and
+/// assigning atomic appearance generations.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AppearanceProvideScope {
+    pub providers: BTreeSet<String>,
+    pub mounts: BTreeSet<FilesystemMountRequest>,
+    pub maximum_file_bytes: u64,
+    pub maximum_updates_per_second: u16,
+}
+
+impl Default for AppearanceProvideScope {
+    fn default() -> Self {
+        Self {
+            providers: BTreeSet::new(),
+            mounts: BTreeSet::new(),
+            maximum_file_bytes: 64 * 1024,
+            maximum_updates_per_second: 4,
+        }
+    }
+}
+
 impl Default for LocalConnectScope {
     fn default() -> Self {
         Self {
@@ -591,6 +620,28 @@ pub fn normalize_manifest_permissions(
                 }
             }
             Err(mut permission_errors) => errors.append(&mut permission_errors),
+        }
+    }
+    if errors.is_empty() {
+        for (index, provider) in manifest.appearance_providers.iter().enumerate() {
+            let prefix = format!("appearance-provider[{index}]");
+            let appearance_authorized = requests.iter().any(|request| {
+                matches!(
+                    &request.scope,
+                    CapabilityScope::AppearanceProvide(scope)
+                        if scope.providers.contains(&provider.id)
+                            && scope.mounts.iter().any(|mount| mount.label == provider.mount)
+                )
+            });
+            if !appearance_authorized {
+                errors.push(NormalizationError {
+                    field: format!("{prefix}.id"),
+                    message: format!(
+                        "provider `{}` and mount `{}` must be listed by appearance.provide.v1",
+                        provider.id, provider.mount
+                    ),
+                });
+            }
         }
     }
     if errors.is_empty() {
@@ -660,6 +711,10 @@ fn normalize_permission(
         }
         CapabilityId::LocalConnectV1 => {
             decode_scope::<LocalConnectScope>(permission, &field).map(CapabilityScope::LocalConnect)
+        }
+        CapabilityId::AppearanceProvideV1 => {
+            decode_scope::<AppearanceProvideScope>(permission, &field)
+                .map(CapabilityScope::AppearanceProvide)
         }
         CapabilityId::Unknown(_) => Ok(CapabilityScope::Unknown(encoded_scope)),
     }
@@ -1034,6 +1089,26 @@ fn validate_scope(
                 }
             }
         }
+        CapabilityScope::AppearanceProvide(value) => {
+            require_nonempty(&value.providers, "providers", &mut issue);
+            require_collection_limit(value.providers.len(), 8, "providers", &mut issue);
+            validate_mounts(&value.mounts, &mut issue);
+            require_nonzero(value.maximum_file_bytes, "maximum_file_bytes", &mut issue);
+            require_at_most(
+                value.maximum_file_bytes,
+                1024 * 1024,
+                "maximum_file_bytes",
+                &mut issue,
+            );
+            validate_rate(value.maximum_updates_per_second, &mut issue);
+            require_at_most(
+                value.maximum_updates_per_second,
+                30,
+                "maximum_updates_per_second",
+                &mut issue,
+            );
+            validate_kebab_set(&value.providers, "appearance provider", &mut issue);
+        }
         CapabilityScope::Unknown(_) => {}
     }
     if !scope.matches_capability(capability) {
@@ -1080,6 +1155,10 @@ impl CapabilityScope {
                 | (CapabilityId::NotificationSendV1, Self::NotificationSend(_))
                 | (CapabilityId::UriOpenV1, Self::UriOpen(_))
                 | (CapabilityId::LocalConnectV1, Self::LocalConnect(_))
+                | (
+                    CapabilityId::AppearanceProvideV1,
+                    Self::AppearanceProvide(_)
+                )
                 | (CapabilityId::Unknown(_), Self::Unknown(_))
         )
     }
@@ -1149,6 +1228,12 @@ impl CapabilityScope {
                     && new.maximum_frame_bytes <= old.maximum_frame_bytes
                     && new.maximum_bytes_per_minute <= old.maximum_bytes_per_minute
             }
+            (Self::AppearanceProvide(new), Self::AppearanceProvide(old)) => {
+                new.providers.is_subset(&old.providers)
+                    && mount_labels_subset(&new.mounts, &old.mounts)
+                    && new.maximum_file_bytes <= old.maximum_file_bytes
+                    && new.maximum_updates_per_second <= old.maximum_updates_per_second
+            }
             (Self::Unknown(new), Self::Unknown(old)) => new == old,
             _ => false,
         }
@@ -1174,6 +1259,7 @@ impl CapabilityScope {
             | CapabilityId::ClipboardWriteV1
             | CapabilityId::NotificationSendV1
             | CapabilityId::UriOpenV1 => RiskClass::Controlling,
+            CapabilityId::AppearanceProvideV1 => RiskClass::Controlling,
             CapabilityId::CommandRunV1 => match self {
                 Self::CommandRun(scope) if scope.commands.iter().any(command_is_interpreter) => {
                     RiskClass::EffectivelyTrusted

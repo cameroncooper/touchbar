@@ -31,6 +31,43 @@ profile. Both item and profile choices survive reinstall/update. A user can run
 document. `plugin run --when-application CLASS` remains the disposable
 on-device test path.
 
+Packages may also contribute an automatically matched global palette without
+teaching the compositor about a particular desktop. Declare an
+`[[appearance-provider]]` whose source is a relative path beneath a logical
+mount, then request `appearance.provide.v1` for the same package-local provider
+ID and mount. This purpose-specific mount is not exposed through the component
+broker as generic filesystem access. The host matches `desktop_sessions`,
+securely reads only the bounded palette document, assigns generations, and
+broadcasts one atomic semantic snapshot; plugin code does not write
+`theme.toml` or choose itself over an explicit user override.
+
+```toml
+[[appearance-provider]]
+id = "desktop-theme"
+label = "Desktop theme"
+mount = "desktop-state"
+path = "current/theme/colors.toml"
+desktop_sessions = ["example-desktop"]
+
+[[permission]]
+capability = "appearance.provide.v1"
+required = false
+reason = "Offer desktop colors as the Touch Bar appearance"
+[permission.scope]
+providers = ["desktop-theme"]
+maximum_file_bytes = 65536
+maximum_updates_per_second = 4
+
+[[permission.scope.mounts]]
+label = "desktop-state"
+suggested_location = "xdg-state:example/current"
+```
+
+Denying or revoking the optional grant disables only the provider; rendering
+items continue under the next selected host appearance. Consent binds the
+logical mount to an exact host directory, for example with
+`--bind desktop-state=/absolute/path`.
+
 Use theme roles from the UI protocol rather than fixed foreground/background colors. The daemon sends a fresh theme snapshot whenever the active palette changes. Layouts must render at any assigned width; use responsive variants and keep item IDs stable across releases. The canvas follows the attached panel, so never assume a particular total strip width. The component host supplies the manifest's canonical `github:owner/repository` source as the runtime plugin identity. A native runtime must pass that exact manifest source to `ClientOptions::new`; profiles identify a surface with the collision-free pair `{ plugin = "github:owner/repository", item = "local-item-id" }`.
 
 Use `touchbarctl plugin dev --package DIR --item ID` for the normal unprivileged
