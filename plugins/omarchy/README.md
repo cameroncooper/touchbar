@@ -81,7 +81,8 @@ specifically testing production permissions and broker behavior.
 
 `plugin replay --scenario tests/replay.json --screenshots DIR` renders the whole
 sequence — rest, a light and ripple crossing the field, a theme change
-mid-animation, reduced motion, and both wake frames — without hardware.
+mid-animation, a light theme over the black canvas, reduced motion, and both
+wake frames — without hardware.
 Run `scripts/generate-omarchy-gif.sh` from the repository root to regenerate
 the animated README preview from one complete deterministic effect period.
 
@@ -93,6 +94,13 @@ roaming light becomes a minute-long end-to-end sweep, while a circular pulse
 reads on the shallow panel as two fronts moving away from centre. The panel is
 also OLED, so the mark breathes and drifts slowly around centre instead of
 holding one intensity and position forever.
+
+The screensaver's full-width canvas is always opaque black, matching the
+keyboard and Touch Bar bezel. Theme changes affect the pixel field and wordmark
+rather than turning the strip into a colored rectangle; accent and foreground
+colors are lifted only when needed for contrast. This is a choice made by the
+Omarchy plugin, not a renderer restriction. The published palette and the
+`palette` diagnostic item remain exact.
 
 Everything is paced for ~30 Hz. Physical presentation runs at 29.9 Hz and the
 animation cadence drops to 30 Hz on battery. Under `motion = "reduced"` the same
@@ -135,9 +143,9 @@ An explicit `TOUCHBAR_THEME` or existing `~/.config/touchbar/theme.toml` remains
 a higher-priority user override. No symlink, generated copy, or theme hook is
 needed.
 
-This is also what gives the field its identity. `accent` supplies the lit tone,
-`background` pulls it down into dim and mid pixels, and `foreground` lifts it
-into hover and crest pixels, without the package knowing the theme's name.
+This is also what gives the field its identity. Black anchors the field's dim
+pixels, while contrast-safe `accent` and `foreground` supply the lit, hover,
+and crest tones without the package knowing the theme's name.
 
 ## What is still a prototype
 

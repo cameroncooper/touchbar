@@ -37,7 +37,7 @@ orphaned overlay. The full lifecycle contract is documented in
 popover / policy overlays
 item surfaces selected by active bar composition
 singleton full-canvas backdrop
-daemon fallback background color
+session-owned opaque black fallback
 ```
 
 ## Alpha
@@ -65,6 +65,15 @@ Raw GLES plugins can use the same values in shaders or ignore them. This
 division keeps all plugins visually consistent by default without making the
 UI kit responsible for filesystem discovery or giving different SDKs
 different theme policy.
+
+Opaque black is a first-party composition convention because it visually joins
+the Touch Bar to its black bezel and keyboard. The session configures its
+fallback canvas this way, and bundled plugins and system scenes that own a
+full-canvas backdrop do the same. Bundled controls may use themed surfaces, but
+their noninteractive background fields remain black. This is not a generic
+compositor restriction: the compositor remains configurable, the protocol and
+SDK preserve arbitrary colors and semantic theme backgrounds, and a plugin can
+explicitly paint any color over the fallback.
 
 Source selection is host policy. `TOUCHBAR_THEME` has highest precedence,
 followed by an existing `~/.config/touchbar/theme.toml`, an eligible installed

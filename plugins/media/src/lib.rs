@@ -100,7 +100,7 @@ let carrier = sin(centered.x * 18.0 - time * 6.2831853);
 let distance_to_wave = abs(centered.y - carrier * (0.08 + params0.x * 0.04));
 let glow = 1.0 - smoothstep(0.01, 0.24, distance_to_wave);
 let pulse = 0.5 + 0.5 * sin(time * 3.1415926 + params0.y * 2.0);
-let base = mix(background, control, 0.42);
+let base = vec4<f32>(0.0, 0.0, 0.0, 1.0);
 let color = mix(base, accent, glow * (0.05 + pulse * 0.10));
 "#,
         )

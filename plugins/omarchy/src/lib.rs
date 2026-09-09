@@ -13,10 +13,10 @@
 //! the mark breathes and drifts slowly around centre instead of holding one
 //! intensity and position forever.
 //!
-//! Every color is a semantic role. The component never learns the theme's name
-//! or its hex values — the host resolves roles at paint time, so `omarchy theme
-//! set` recolors both the drawing and the running shader without this code
-//! rendering again. `palette` exists to make that visible in one glance.
+//! The screensaver uses an opaque black canvas that disappears into the
+//! keyboard and bezel, then derives its lit colors from semantic theme roles.
+//! It does not know theme names or carry per-theme overrides. `palette`
+//! deliberately shows the unmodified roles for diagnosis.
 //!
 //! The drawing component requests no broker access. A separate sandboxed
 //! appearance-provider worker watches Omarchy and publishes semantic colors;
@@ -24,11 +24,11 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use touchbar_component_sdk::bindings::touchbar::plugin::ui::MotionPolicy;
+use touchbar_component_sdk::bindings::touchbar::plugin::ui::{MotionPolicy, Rgba, Theme};
 use touchbar_component_sdk::kit::{
-    Animation, AnimationPlayback, Canvas2d, ColorRole, Easing, GpuEffect, InputEvent, InputKind,
-    NodeId, Pressable, TextAlign, ViewBuilder, theme_paint, theme_paint_with_opacity,
-    visual_transform,
+    Animation, AnimationPlayback, Canvas2d, CanvasPaint, ColorRole, Easing, GpuEffect, InputEvent,
+    InputKind, NodeId, Pressable, TextAlign, ViewBuilder, rgba_paint, theme_paint,
+    theme_paint_with_opacity, visual_transform,
 };
 use touchbar_component_sdk::{
     Guest, HostEvent, Item, PresentationEvent, RenderRequest, Update, View,
@@ -51,6 +51,16 @@ const FIELD_PERIOD_MS: u32 = 60_000;
 const BREATH_PERIOD_MS: u32 = 10_000;
 /// A full there-and-back drift. The host caps a single animation at 60s.
 const DRIFT_PERIOD_MS: u32 = 60_000;
+
+const MIN_ACCENT_LUMINANCE: f32 = 0.28;
+const MIN_FOREGROUND_LUMINANCE: f32 = 0.55;
+
+const OPAQUE_BLACK: Rgba = Rgba {
+    red: 0.0,
+    green: 0.0,
+    blue: 0.0,
+    alpha: 1.0,
+};
 
 const WORDMARK_WIDTH: usize = 81;
 const WORDMARK_HEIGHT: usize = 19;
@@ -79,8 +89,9 @@ const WORDMARK: [&str; WORDMARK_HEIGHT] = [
     "000000000000000000000000000000000000000111000100000000000000000000000000000000000",
 ];
 
-/// The quiet layer of the homepage field. `params0.x` is the shared
-/// cell pitch and `params0.yz` is the wordmark's grid origin. Each fragment is
+/// The quiet layer of the homepage field. `params0.x` is the shared cell pitch
+/// and `params0.yz` is the wordmark's grid origin. The remaining parameters
+/// carry the projected background and contrast lift factors. Each fragment is
 /// quantized into that grid, so the field stays visibly pixelated at 2008x60.
 ///
 const FIELD_SOURCE: &str = r#"
@@ -91,8 +102,10 @@ let tile = step(inside.x, 0.80) * step(inside.y, 0.80);
 let hash = fract(sin(dot(cell, vec2<f32>(12.9898, 78.233))) * 43758.5453);
 let phase = time * 0.104719755;
 let energy = hash * 0.48 + (0.5 + 0.5 * sin(cell.x * 0.071 + cell.y * 0.73 + phase * 3.0)) * 0.30 + (0.5 + 0.5 * sin(cell.x * 0.037 - cell.y * 0.41 - phase * 2.0)) * 0.22;
-let dim_color = mix(background, accent, 0.23);
-let mid_color = mix(background, accent, 0.55);
+let safe_background = vec4<f32>(params0.w, params1.x, params1.y, background.a);
+let safe_accent = mix(accent, vec4<f32>(1.0, 1.0, 1.0, accent.a), params1.z);
+let dim_color = mix(safe_background, safe_accent, 0.23);
+let mid_color = mix(safe_background, safe_accent, 0.55);
 let tier = mix(dim_color, mid_color, step(0.84, energy));
 let color = vec4<f32>(tier.rgb, tile * step(0.68, energy));
 "#;
@@ -110,7 +123,9 @@ let phase = time * 0.104719755;
 let delta = vec2<f32>((uv.x - (fract(time * 0.016666667 + 0.5) * 1.32 - 0.16)) * size.x / 118.0, (uv.y - (0.5 + 0.17 * sin(phase * 2.0))) * 3.4);
 let energy = exp(-dot(delta, delta));
 let visible = tile * step(0.14 + hash * 0.66, energy);
-let tier = mix(accent, mix(accent, foreground, 0.70), step(0.76, energy));
+let safe_accent = mix(accent, vec4<f32>(1.0, 1.0, 1.0, accent.a), params1.z);
+let safe_foreground = mix(foreground, vec4<f32>(1.0, 1.0, 1.0, foreground.a), params1.w);
+let tier = mix(safe_accent, mix(safe_accent, safe_foreground, 0.70), step(0.76, energy));
 let color = vec4<f32>(tier.rgb, visible * (0.42 + energy * 0.58));
 "#;
 
@@ -125,7 +140,9 @@ let phase = fract(time * 0.066666667);
 let distance = length(vec2<f32>((uv.x * size.x - size.x * 0.5) * 0.70, (uv.y * size.y - size.y * 0.5) * 4.0));
 let energy = (1.0 - smoothstep(0.0, 24.0, abs(distance - phase * size.x * 0.42))) * (1.0 - phase);
 let visible = tile * step(0.24 + hash * 0.52, energy);
-let tier = mix(mix(background, accent, 0.55), accent, step(0.68, energy));
+let safe_background = vec4<f32>(params0.w, params1.x, params1.y, background.a);
+let safe_accent = mix(accent, vec4<f32>(1.0, 1.0, 1.0, accent.a), params1.z);
+let tier = mix(mix(safe_background, safe_accent, 0.55), safe_accent, step(0.68, energy));
 let color = vec4<f32>(tier.rgb, visible * 0.72);
 "#;
 
@@ -148,7 +165,7 @@ impl Guest for Omarchy {
         let width = request.viewport.width;
         let height = request.viewport.height;
         Ok(match request.item_id.as_str() {
-            "screensaver" => screensaver(width, height, request.theme.motion),
+            "screensaver" => screensaver(width, height, &request.theme),
             "palette" => palette(width),
             other => return Err(format!("unknown item {other}")),
         })
@@ -166,34 +183,36 @@ impl Guest for Omarchy {
         Ok(idle_update())
     }
 
-    // A theme revision lands here. Rebuilding is cheap and keeps the retained
-    // tree honest, though a running effect would pick the palette up either
-    // way: roles are uniforms resolved at paint time.
+    // Rebuild on every theme revision: the OLED projection is represented by
+    // bounded shader parameters derived from the new semantic colors.
     fn handle_host_event(_event: HostEvent) -> Result<Update, String> {
         Ok(rerender())
     }
 }
 
-fn screensaver(width: f32, height: f32, motion: MotionPolicy) -> View {
+fn screensaver(width: f32, height: f32, theme: &Theme) -> View {
     let mut b = ViewBuilder::new();
-    let animated = motion == MotionPolicy::Full;
+    let animated = theme.motion == MotionPolicy::Full;
     let width = width.max(1.0);
     let height = height.max(1.0);
     let geometry = wordmark_geometry(width, height);
+    let colors = oled_palette(&theme.accent, &theme.foreground);
 
-    // An opaque bed in `background`, so the field has somewhere to fade to
-    // when the strip is handed back.
+    // This is a first-party visual choice, not a renderer restriction. An
+    // opaque black bed makes the content continuous with the bezel.
     let mut ground = Canvas2d::new("Ground", width, height);
-    ground.fill_rect(
-        0.0,
-        0.0,
-        width,
-        height,
-        0.0,
-        theme_paint(ColorRole::Background),
-    );
+    ground.fill_rect(0.0, 0.0, width, height, 0.0, rgba(&colors.background));
     let bed = ground.finish(&mut b);
-    let effect_parameters = [geometry.cell, geometry.left, geometry.top];
+    let effect_parameters = [
+        geometry.cell,
+        geometry.left,
+        geometry.top,
+        colors.background.red,
+        colors.background.green,
+        colors.background.blue,
+        colors.accent_lift,
+        colors.foreground_lift,
+    ];
     let quiet = b.shader_effect(
         GpuEffect::new(FIELD_EFFECT, "Omarchy pixel field", FIELD_SOURCE)
             .parameters(effect_parameters)
@@ -214,9 +233,9 @@ fn screensaver(width: f32, height: f32, motion: MotionPolicy) -> View {
     );
     let field = b.layer(vec![quiet, light, ripple]);
     let scene = if AWAKE.load(Ordering::Relaxed) {
-        waking(&mut b, field, width, height, geometry, animated)
+        waking(&mut b, field, width, height, geometry, animated, &colors)
     } else {
-        resting(&mut b, field, width, height, geometry, animated)
+        resting(&mut b, field, width, height, geometry, animated, &colors)
     };
     let content = b.layer(vec![bed, scene]);
     // Full-bleed and silent under touch: a screensaver that flashes a control
@@ -235,6 +254,95 @@ fn screensaver(width: f32, height: f32, motion: MotionPolicy) -> View {
     b.finish(root)
 }
 
+struct OledPalette {
+    background: Rgba,
+    accent: Rgba,
+    foreground: Rgba,
+    accent_lift: f32,
+    foreground_lift: f32,
+}
+
+fn oled_palette(accent: &Rgba, foreground: &Rgba) -> OledPalette {
+    let (accent, accent_lift) = lift_luminance(accent, MIN_ACCENT_LUMINANCE);
+    let (foreground, foreground_lift) = lift_luminance(foreground, MIN_FOREGROUND_LUMINANCE);
+    OledPalette {
+        background: copy_color(&OPAQUE_BLACK),
+        accent,
+        foreground,
+        accent_lift,
+        foreground_lift,
+    }
+}
+
+/// Find the smallest sRGB interpolation toward white that reaches the desired
+/// contrast. The interpolation factor is also sent to the bounded shader so
+/// retained canvas nodes and GPU effects use the exact same projected color.
+fn lift_luminance(color: &Rgba, minimum: f32) -> (Rgba, f32) {
+    if relative_luminance(color) >= minimum {
+        return (copy_color(color), 0.0);
+    }
+    let mut low = 0.0;
+    let mut high = 1.0;
+    for _ in 0..16 {
+        let middle = (low + high) * 0.5;
+        if relative_luminance(&mix_with_white(color, middle)) < minimum {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    (mix_with_white(color, high), high)
+}
+
+fn mix_with_white(color: &Rgba, amount: f32) -> Rgba {
+    Rgba {
+        red: color.red + (1.0 - color.red) * amount,
+        green: color.green + (1.0 - color.green) * amount,
+        blue: color.blue + (1.0 - color.blue) * amount,
+        alpha: color.alpha,
+    }
+}
+
+fn copy_color(color: &Rgba) -> Rgba {
+    Rgba {
+        red: color.red,
+        green: color.green,
+        blue: color.blue,
+        alpha: color.alpha,
+    }
+}
+
+fn relative_luminance(color: &Rgba) -> f32 {
+    linear_luminance([
+        srgb_to_linear(color.red),
+        srgb_to_linear(color.green),
+        srgb_to_linear(color.blue),
+    ])
+}
+
+fn linear_luminance(color: [f32; 3]) -> f32 {
+    color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722
+}
+
+fn srgb_to_linear(channel: f32) -> f32 {
+    let channel = channel.clamp(0.0, 1.0);
+    if channel <= 0.04045 {
+        channel / 12.92
+    } else {
+        ((channel + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn rgba(color: &Rgba) -> CanvasPaint {
+    rgba_paint(color.red, color.green, color.blue, color.alpha)
+}
+
+fn rgba_with_opacity(color: &Rgba, opacity: f32) -> CanvasPaint {
+    let mut paint = rgba(color);
+    paint.opacity = opacity;
+    paint
+}
+
 /// Idle: a five-band pixel wordmark breathes and drifts over the animated grid.
 /// Under reduced motion, both the shader clock and retained motion hold still.
 fn resting(
@@ -244,8 +352,9 @@ fn resting(
     height: f32,
     geometry: WordmarkGeometry,
     animated: bool,
+    colors: &OledPalette,
 ) -> NodeId {
-    let mark = pixel_wordmark(b, width, height, geometry);
+    let mark = pixel_wordmark(b, width, height, geometry, colors);
     if !animated {
         return b.layer(vec![field, mark]);
     }
@@ -278,8 +387,9 @@ fn waking(
     height: f32,
     geometry: WordmarkGeometry,
     animated: bool,
+    colors: &OledPalette,
 ) -> NodeId {
-    let mark = pixel_wordmark(b, width, height, geometry);
+    let mark = pixel_wordmark(b, width, height, geometry, colors);
     let mut rule = Canvas2d::new("Handback rule", width, height);
     let rule_height = geometry.cell.max(1.0).min(3.0);
     rule.fill_rect(
@@ -288,7 +398,7 @@ fn waking(
         width,
         rule_height,
         0.0,
-        theme_paint(ColorRole::Accent),
+        rgba(&colors.accent),
     );
     let hairline = rule.finish(b);
     if !animated {
@@ -348,6 +458,7 @@ fn pixel_wordmark(
     width: f32,
     height: f32,
     geometry: WordmarkGeometry,
+    colors: &OledPalette,
 ) -> NodeId {
     let mut canvas = Canvas2d::new("Pixelated Omarchy wordmark", width, height);
     for (row_index, row) in WORDMARK.iter().enumerate() {
@@ -378,7 +489,7 @@ fn pixel_wordmark(
                 run_width,
                 geometry.cell,
                 0.0,
-                theme_paint_with_opacity(ColorRole::Accent, accent_opacity),
+                rgba_with_opacity(&colors.accent, accent_opacity),
             );
             if lift_opacity > 0.0 {
                 canvas.fill_rect(
@@ -387,7 +498,7 @@ fn pixel_wordmark(
                     run_width,
                     geometry.cell,
                     0.0,
-                    theme_paint_with_opacity(ColorRole::Foreground, lift_opacity),
+                    rgba_with_opacity(&colors.foreground, lift_opacity),
                 );
             }
         }
@@ -474,6 +585,15 @@ fn idle_update() -> Update {
 mod tests {
     use super::*;
 
+    fn rgb(red: u8, green: u8, blue: u8) -> Rgba {
+        Rgba {
+            red: f32::from(red) / 255.0,
+            green: f32::from(green) / 255.0,
+            blue: f32::from(blue) / 255.0,
+            alpha: 1.0,
+        }
+    }
+
     #[test]
     fn homepage_wordmark_is_an_81_by_19_bitmap() {
         assert_eq!(WORDMARK.len(), WORDMARK_HEIGHT);
@@ -517,6 +637,35 @@ mod tests {
         assert_eq!(runs, 211);
         assert_eq!(lifted_runs, 79);
         assert!(runs + lifted_runs + 1 <= 512);
+    }
+
+    #[test]
+    fn light_theme_roles_use_black_with_contrast_safe_lit_colors() {
+        let colors = oled_palette(&rgb(30, 102, 245), &rgb(76, 79, 105));
+
+        assert_eq!(colors.background.red, 0.0);
+        assert_eq!(colors.background.green, 0.0);
+        assert_eq!(colors.background.blue, 0.0);
+        assert_eq!(colors.background.alpha, 1.0);
+        assert!(relative_luminance(&colors.accent) >= MIN_ACCENT_LUMINANCE);
+        assert!(relative_luminance(&colors.foreground) >= MIN_FOREGROUND_LUMINANCE);
+        assert!(colors.accent_lift > 0.0);
+        assert!(colors.foreground_lift > 0.0);
+    }
+
+    #[test]
+    fn already_safe_lit_colors_pass_through_over_black() {
+        let accent = rgb(122, 162, 247);
+        let foreground = rgb(202, 204, 204);
+        let colors = oled_palette(&accent, &foreground);
+
+        assert_eq!(colors.background.red, 0.0);
+        assert_eq!(colors.background.green, 0.0);
+        assert_eq!(colors.background.blue, 0.0);
+        assert_eq!(colors.accent.red, accent.red);
+        assert_eq!(colors.foreground.red, foreground.red);
+        assert_eq!(colors.accent_lift, 0.0);
+        assert_eq!(colors.foreground_lift, 0.0);
     }
 }
 

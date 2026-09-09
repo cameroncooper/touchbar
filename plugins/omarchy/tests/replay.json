@@ -38,8 +38,24 @@
     },
     {
       "kind": "appearance",
-      "preset": "dark",
+      "preset": "light",
       "revision": 3,
+      "colors": {
+        "background": "#fff2d6",
+        "accent": "#1e66f5",
+        "foreground": "#4c4f69",
+        "muted": "#9ca0b0"
+      },
+      "motion": "full"
+    },
+    {
+      "kind": "snapshot",
+      "name": "light-theme-black"
+    },
+    {
+      "kind": "appearance",
+      "preset": "dark",
+      "revision": 4,
       "motion": "reduced"
     },
     {
@@ -49,7 +65,7 @@
     {
       "kind": "appearance",
       "preset": "dark",
-      "revision": 4,
+      "revision": 5,
       "motion": "full"
     },
     {

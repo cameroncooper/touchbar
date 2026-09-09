@@ -3,6 +3,11 @@ use touchbar_ui::{Color, Image, SvgAsset, SvgRasterizer, TextAlign, TextEngine};
 
 use crate::{ButtonVisual, SystemButton, SystemIcon};
 
+/// First-party system rows visually merge into the physical bezel. This is a
+/// renderer-specific style choice; plugin and appearance APIs remain capable
+/// of carrying arbitrary background colors.
+const SYSTEM_CANVAS_BACKGROUND: Rgba8 = Rgba8::rgb(0, 0, 0);
+
 pub struct SystemBarRenderer {
     text: TextEngine,
     icons: SvgRasterizer,
@@ -33,7 +38,7 @@ impl SystemBarRenderer {
         height: u32,
     ) -> &[u8] {
         self.pixels.resize(width as usize * height as usize * 4, 0);
-        fill(&mut self.pixels, appearance.background);
+        fill(&mut self.pixels, SYSTEM_CANVAS_BACKGROUND);
         for button in buttons {
             let background = if button.pressed {
                 appearance.surface_pressed
@@ -273,6 +278,19 @@ mod tests {
         };
         let themed = renderer.render(&bar.buttons(), changed, 2008, 60).to_vec();
         assert_ne!(first, themed);
+    }
+
+    #[test]
+    fn themed_system_bar_keeps_an_opaque_black_canvas() {
+        let bar = SystemBar::new(SystemBarConfig::default(), 2008.0, 60.0);
+        let mut renderer = SystemBarRenderer::new(2008, 60);
+        let appearance = AppearanceSnapshot {
+            background: Rgba8::rgb(255, 242, 214),
+            ..AppearanceSnapshot::default()
+        };
+
+        let pixels = renderer.render(&bar.buttons(), appearance, 2008, 60);
+        assert_eq!(&pixels[0..4], &[0, 0, 0, 255]);
     }
 
     #[test]

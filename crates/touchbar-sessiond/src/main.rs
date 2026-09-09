@@ -90,6 +90,9 @@ const DRM_FORMAT_MOD_APPLE_TILED_COMPRESSED: u64 = 0x0c00_0000_0000_0002;
 const MAX_PLUGIN_SURFACES: usize = 64;
 const PROFILE_RELOAD_COALESCE: Duration = Duration::from_millis(75);
 const THEME_CHANGE_ACTIVITY_DURATION: Duration = Duration::from_secs(2);
+/// The first-party session composition visually joins transparent gaps to the
+/// Touch Bar bezel. Plugins can still paint any color over this canvas.
+const SESSION_CANVAS_BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const MAX_PENDING_CONFIGURES: usize = 64;
 const FN_TAP_MAX_DURATION: Duration = Duration::from_millis(250);
 const FN_DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(400);
@@ -631,7 +634,7 @@ impl State {
     ) -> Result<Self> {
         let appearance_source = AppearanceSource::discover(appearance_provider);
         let power_source = PowerSource::discover();
-        gpu.set_background_color(Self::gpu_color(appearance_source.snapshot().background));
+        gpu.set_background_color(SESSION_CANVAS_BACKGROUND);
         // The canvas follows the attached panel; a presenter that already
         // installed a swapchain has resized the scene by now.
         let canvas_width = gpu.canvas_width();
@@ -819,8 +822,6 @@ impl State {
         self.appearances
             .values()
             .for_each(|resource| Self::publish_appearance(resource, snapshot));
-        self.gpu
-            .set_background_color(Self::gpu_color(snapshot.background));
         self.refresh_system_scene()?;
         self.refresh_plugin_placeholder_scene()?;
         self.scene_dirty = true;
@@ -876,16 +877,6 @@ impl State {
             PowerState::Battery => touchbar_control::PowerSourceStatus::Battery,
             PowerState::Unknown => touchbar_control::PowerSourceStatus::Unknown,
         }
-    }
-
-    fn gpu_color(color: touchbar_protocol::appearance::Rgba8) -> [f32; 4] {
-        let alpha = f32::from(color.alpha) / 255.0;
-        [
-            f32::from(color.red) / 255.0 * alpha,
-            f32::from(color.green) / 255.0 * alpha,
-            f32::from(color.blue) / 255.0 * alpha,
-            alpha,
-        ]
     }
 
     fn presentation_content_bar(
