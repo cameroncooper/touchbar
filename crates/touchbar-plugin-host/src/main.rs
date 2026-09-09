@@ -1,4 +1,9 @@
-use std::{collections::VecDeque, env, fs, path::PathBuf, time::Instant};
+use std::{
+    collections::VecDeque,
+    env, fs,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, bail};
 use touchbar_client::{
@@ -10,13 +15,13 @@ use touchbar_client::{
 };
 use touchbar_package::{MANIFEST_FILE_NAME, MAX_TOUCHBAR_WIDTH, PluginManifest, RuntimeSpec};
 use touchbar_plugin_host::{
-    ASSET_BUNDLE_FD_ENV, Appearance, BrokerClient, COMPONENT_FD_ENV, ColorScheme,
-    ComponentPresentationCommand, ComponentPresentationDismissal, ComponentPresentationEndReason,
-    ComponentPresentationEvent, ComponentPresentationLifecycle, ComponentPresentationPlacement,
-    ComponentUpdate, HostLimits, HostedItem, InputActivation, InputEvent, InputKind,
-    MANIFEST_FD_ENV, MAX_INHERITED_ASSET_BUNDLE_BYTES, MAX_INHERITED_COMPONENT_BYTES,
-    MAX_INHERITED_MANIFEST_BYTES, PackageAssets, PluginHost, apply_component_confinement,
-    read_supervisor_file,
+    ASSET_BUNDLE_FD_ENV, Appearance, AppearanceProviderHost, BrokerClient, COMPONENT_FD_ENV,
+    ColorScheme, ComponentPresentationCommand, ComponentPresentationDismissal,
+    ComponentPresentationEndReason, ComponentPresentationEvent, ComponentPresentationLifecycle,
+    ComponentPresentationPlacement, ComponentUpdate, HostLimits, HostedItem, InputActivation,
+    InputEvent, InputKind, MANIFEST_FD_ENV, MAX_INHERITED_ASSET_BUNDLE_BYTES,
+    MAX_INHERITED_COMPONENT_BYTES, MAX_INHERITED_MANIFEST_BYTES, PackageAssets, PluginHost,
+    apply_component_confinement, read_supervisor_file,
 };
 use touchbar_protocol::broker_ipc::ActivationOrigin;
 use touchbar_ui::{
@@ -28,6 +33,7 @@ mod replay;
 mod replay_gpu;
 
 const USAGE: &str = "usage:\n  touchbar-plugin-host PACKAGE [ITEM] [WIDTH] [ACTIVATE_WIDGET]\n  touchbar-plugin-host PACKAGE --replay SCENARIO.json [--screenshots DIRECTORY]\n  touchbar-plugin-host PACKAGE --live [--item ITEM] [--width WIDTH] [--frames N] [--require-hardware]";
+const APPEARANCE_PROVIDER_TICK_INTERVAL: Duration = Duration::from_millis(250);
 
 struct OpenedPackage {
     root: PathBuf,
@@ -59,6 +65,9 @@ enum Mode {
 }
 
 fn main() -> Result<()> {
+    if env::args().nth(2).as_deref() == Some("--appearance-provider-worker") {
+        return run_appearance_provider_worker();
+    }
     let (package, mode) = parse_args()?;
     let live = matches!(&mode, Mode::Live { .. });
     let replay_scenario = match &mode {
@@ -86,6 +95,75 @@ fn main() -> Result<()> {
             screenshots.as_deref(),
         ),
     }
+}
+
+fn run_appearance_provider_worker() -> Result<()> {
+    let arguments = env::args().collect::<Vec<_>>();
+    if arguments.len() != 4 {
+        bail!("appearance provider worker requires PACKAGE and PROVIDER_ID");
+    }
+    let provider_id = &arguments[3];
+    let broker = BrokerClient::from_environment()?
+        .context("appearance provider worker requires a supervisor broker")?;
+    let manifest = read_supervisor_file(MANIFEST_FD_ENV, MAX_INHERITED_MANIFEST_BYTES)?
+        .context("appearance provider worker requires a sealed manifest")?;
+    let component = read_supervisor_file(COMPONENT_FD_ENV, MAX_INHERITED_COMPONENT_BYTES)?
+        .context("appearance provider worker requires a sealed component")?;
+    apply_component_confinement(false)?;
+    let manifest = PluginManifest::from_toml(
+        std::str::from_utf8(&manifest).context("verified manifest is not UTF-8")?,
+    )?;
+    let provider = manifest
+        .appearance_providers
+        .iter()
+        .find(|provider| provider.id == *provider_id)
+        .with_context(|| format!("manifest does not declare appearance provider {provider_id}"))?;
+    if provider.world != touchbar_package::SUPPORTED_APPEARANCE_PROVIDER_WORLD {
+        bail!("appearance provider uses an unsupported component world");
+    }
+    let mut host =
+        AppearanceProviderHost::from_bytes_with_broker(&component, HostLimits::default(), broker)?;
+    host.start(provider_id)?;
+    let mut next_tick = Instant::now() + APPEARANCE_PROVIDER_TICK_INTERVAL;
+    loop {
+        let mut descriptor = libc::pollfd {
+            fd: host.broker_event_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let timeout = poll_timeout_milliseconds(next_tick, Instant::now());
+        // SAFETY: descriptor points to one initialized pollfd for this call.
+        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout) };
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error).context("poll appearance provider broker");
+        }
+        if ready > 0 {
+            host.dispatch_broker_events()?;
+        }
+        let now = Instant::now();
+        if now >= next_tick {
+            host.tick()?;
+            // Do not replay missed ticks after a delayed broker callback. A
+            // provider observes current state; catch-up work only creates a
+            // burst of redundant authority requests.
+            next_tick = now + APPEARANCE_PROVIDER_TICK_INTERVAL;
+        }
+    }
+}
+
+fn poll_timeout_milliseconds(deadline: Instant, now: Instant) -> i32 {
+    let remaining = deadline.saturating_duration_since(now);
+    if remaining.is_zero() {
+        return 0;
+    }
+    let rounded_up = remaining
+        .as_millis()
+        .saturating_add(u128::from(remaining.subsec_nanos() % 1_000_000 != 0));
+    i32::try_from(rounded_up).unwrap_or(i32::MAX)
 }
 
 fn parse_args() -> Result<(PathBuf, Mode)> {
@@ -891,6 +969,20 @@ mod tests {
         assert_eq!(
             activation_origin(ContactOrigin::Physical),
             ActivationOrigin::Physical
+        );
+    }
+
+    #[test]
+    fn provider_poll_timeout_waits_for_the_tick_deadline_without_catch_up() {
+        let now = Instant::now();
+        assert_eq!(poll_timeout_milliseconds(now, now), 0);
+        assert_eq!(
+            poll_timeout_milliseconds(now + Duration::from_millis(250), now),
+            250
+        );
+        assert_eq!(
+            poll_timeout_milliseconds(now + Duration::from_micros(250_001), now),
+            251
         );
     }
 }

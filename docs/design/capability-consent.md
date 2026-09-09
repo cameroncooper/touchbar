@@ -242,8 +242,8 @@ describes the real normalized scope and risks.
 | Capability | Principal scope | Important policy |
 | --- | --- | --- |
 | `context.read.v1` | Exact fact families or keys | Facts have public, activity, sensitive, or secret classification; values are coalesced and size bounded. |
-| `filesystem.read.v1` | User-approved device/inode-bound directory roots and file-kind constraints | Relative paths only; no special files, devices, sockets, mount crossing, or symlink traversal by default. |
-| `filesystem.write.v1` | User-approved device/inode-bound directory roots, operation set, and quota | Separate from read; atomic replace is distinct from create/append/delete; topology changes default off. |
+| `filesystem.read.v1` | User-approved logical path or typed standard-directory roots and file-kind constraints | Relative paths only; no special files, devices, sockets, mount crossing, or symlink traversal by default. |
+| `filesystem.write.v1` | User-approved logical path or typed standard-directory roots, operation set, and quota | Separate from read; atomic replace is distinct from create/append/delete; topology changes default off. |
 | `http.request.v1` | Exact HTTPS origins, methods, optional path prefixes, and private-network flag | Reauthorize every redirect and resolved address; no ambient cookies, proxy, netrc, client certificate, or credentials. |
 | `dbus.call.v1` | Bus, well-known destination, object path, interface, member, and signature | Session bus is not itself a security boundary; deny bus administration, monitoring, arbitrary destinations, and activation by default. |
 | `dbus.subscribe.v1` | Exact senders/interfaces/members and bounded match rules | No eavesdropping; bounded queue with overflow markers and explicit unsubscribe. |
@@ -254,7 +254,7 @@ describes the real normalized scope and risks.
 | `notification.send.v1` | Categories, actions, urgency, and rate | Host labels the originating plugin; no spoofed system identity. |
 | `uri.open.v1` | Schemes and optional origin set | Requires activation; forbids dangerous or unsupported schemes. |
 | `local.connect.v1` | Exact user-approved Unix endpoints and protocol label | No arbitrary socket namespace or descriptor passing; classified as broad unless a protocol adapter narrows operations. |
-| `appearance.provide.v1` | Exact package-local provider IDs, installer-bound palette roots, file size, and update rate | Authorizes bounded palette observation/proposals only; its mounts are not exposed to renderer code, and the compositor owns provider selection, validation, motion policy, derived roles, and atomic generations. |
+| `appearance.provide.v1` | Exact package-local provider IDs, installer-bound roots, file size, and update rate | Available only to the separate provider worker; authorizes bounded reads and typed semantic publication, while the compositor owns selection, motion policy, derived roles, and atomic generations. |
 
 Clipboard, secret, context, URI, notification, and input operations should use
 desktop portals when a suitable portal actually supplies the needed authority
@@ -395,9 +395,14 @@ LocalConnectScope {
 }
 ```
 
-Directory and local-endpoint hints never confer access. Consent maps each
-logical label to a host resource, and that mapping lives only in the grant
-store. A package cannot name `/home/user` and cause it to become authoritative.
+Directory and local-endpoint hints never confer access by themselves. During
+installation the host may resolve only its fixed location vocabulary
+(`xdg-config:`, `xdg-data:`, `xdg-state:`, `xdg-cache:`, `xdg-runtime:`, and
+`home:` plus the standard user-directory names) and must display the exact
+result before consent. Arbitrary absolute paths and parent traversal remain
+descriptive and cannot become defaults. Consent maps each logical label to a
+host resource, and that mapping lives only in the grant store. A package cannot
+name `/home/user` and cause it to become authoritative.
 
 The v1 grant record has one typed `bindings` object. Filesystem roots, Secret
 Service item object paths, pathname Unix-stream endpoints, and the exact
@@ -405,8 +410,10 @@ desktop Wayland clipboard socket occupy separate typed fields. An allowed grant
 must contain exactly the authority required by its approved scope
 and no bindings from another capability; a denied grant must contain none.
 Effective policy copies this object as a unit, and any binding change revokes
-live operations and resources. This is the only host-target authority—manifest
-`suggested_location` and `suggested_endpoint` strings remain display hints.
+live operations and resources. This is the only host-target authority. A
+manifest suggestion becomes useful only when the installer resolves an
+allowlisted symbolic location and the user confirms the displayed result; the
+resulting grant binding, never the manifest string, is authoritative.
 
 D-Bus call authority is a set of complete rules, not independent lists of
 destinations, paths, interfaces, and members. Independent lists would create a
@@ -488,20 +495,21 @@ as an unbounded session grant.
 
 ### Installation
 
-Before executing package code, the installer shows:
+Before executing package code, the high-level installer shows:
 
-- source identity, version, artifact digest, and provenance signal;
-- runtime type: sandboxed component or unrestricted native process;
-- required and optional capabilities grouped by risk;
-- host-generated normalized scope descriptions;
-- the separately labeled author reason;
-- notable capability combinations, such as sensitive reads plus network
-  egress;
+- source identity, version, and provenance signal;
+- an explicit warning for an unrestricted native runtime;
+- a host-written human label and stable identifier for each capability;
+- the author reason and exact resolved host resources;
+- optional permissions skipped because no safe default is available;
 - unsupported requirements and the resulting activation state.
 
-High-risk capabilities are individually selected. A generic “allow everything”
-shortcut must not bypass their disclosure. Noninteractive installation fails
-unless every needed decision is supplied explicitly in machine-readable form.
+One confirmation accepts the complete displayed package plan and enables the
+plugin; it is not a generic undisclosed “allow everything” shortcut. Advanced
+binding flags override resolved defaults. `--yes` accepts that same printed
+plan for automation; noninteractive installation without it fails before the
+package is installed. The low-level add, permission, and enable commands remain
+available when a controller needs separate machine-readable decisions.
 
 ### Updates
 
@@ -654,11 +662,14 @@ messages remain bounded and sanitized.
 
 ### Filesystem
 
-Version 1 uses broker-owned directory descriptors rooted in grant-recorded
-device/inode identities rather than raw host path preopens. This makes every
-operation auditable and revocable. A user chooses or approves a directory; the
-guest sees an opaque label and relative paths. Replacing the persisted path with
-a different directory revokes the binding rather than retargeting authority.
+Version 1 uses broker-owned directory descriptors rooted in installer-owned
+bindings rather than raw host path preopens. A binding is either a normalized
+logical path selected by the user or a typed standard directory (`home`, XDG
+config/data/state/cache/runtime) plus a relative suffix. Standard directories
+are resolved from trusted host session state, never guest environment. The
+guest sees only an opaque label and relative paths. Legitimate replacement of
+a directory at the approved logical location preserves the grant; replacing it
+with a symlink does not.
 
 Linux resolution uses a directory file descriptor and `openat2` containment,
 including `RESOLVE_BENEATH`, `RESOLVE_NO_MAGICLINKS`, and by default
@@ -1147,16 +1158,15 @@ broker-owned resource with metadata, ordered 12 KiB chunks, byte totals,
 explicit termination, and bounded lossless backpressure. Directory results are
 bounded and expose only UTF-8 regular files and directories.
 
-On Linux, the grant records the canonical selected root and its device/inode.
-The backend reopens every component of that root without symlinks and requires
-the recorded identity on every operation, then resolves each relative target
-using `openat2` with
+On Linux, the backend resolves the approved logical or standard-directory root
+without symlinks on every operation, then resolves each relative target using
+`openat2` with
 `RESOLVE_BENEATH`, `RESOLVE_NO_MAGICLINKS`, `RESOLVE_NO_SYMLINKS`, and
 `RESOLVE_NO_XDEV`. Absolute paths, `.`/`..`, symlink escapes, mount crossings,
 special files, oversized files, multi-link inodes, and ungranted labels fail
 before content is returned. A stream opens and validates one descriptor before
-its worker starts, so later path replacement cannot change the authorized
-inode. The reference filesystem component and physical runner exercise a real
+its worker starts, so later path replacement cannot redirect that in-flight
+operation. The reference filesystem component and physical runner exercise a real
 list followed by a bounded stream. Filesystem write is not part of this slice.
 
 The inline HTTP slice is implemented. Its typed request exposes only method,

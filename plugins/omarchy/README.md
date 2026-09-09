@@ -7,11 +7,11 @@ is wearing the current theme.
 ![The animated pixelated Omarchy wordmark in its themed field](../../docs/images/packs/omarchy/screensaver-2008-dark.gif)
 
 The drawing component remains isolated: three validated effects, one retained
-canvas, and host-timed motion. The package separately requests one optional,
-revocable `appearance.provide.v1` capability for its declarative provider. Its
-scope binds Omarchy's current state directory, one package-local provider ID,
-and strict file-size/update-rate limits. It grants the renderer no generic
-filesystem, network, D-Bus, command, or write access.
+canvas, and host-timed motion. A separate sandboxed worker requests the
+revocable `appearance.provide.v1` capability. Its scope binds the Omarchy
+runtime, current-state, user-theme, and system-theme roots plus one
+package-local provider ID and strict file-size/update-rate limits. It grants
+the renderer no filesystem, network, D-Bus, command, or write access.
 
 ## Items
 
@@ -48,19 +48,20 @@ touchbarctl plugin run \
 omarchy-launch-screensaver force
 ```
 
-For the installed behavior, install the pack, authorize its narrowly scoped
-appearance provider, and enable it:
+For the installed behavior, use the normal one-step installer:
 
 ```bash
-touchbarctl plugin add --path plugins/omarchy
-touchbarctl plugin permission github:cameroncooper/touchbar-omarchy \
-  appearance.provide.v1 allow --persistent \
-  --bind omarchy-current="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current"
-touchbarctl plugin enable github:cameroncooper/touchbar-omarchy
+touchbarctl plugin install --path plugins/omarchy
 ```
 
-This grant is installation consent, not ongoing configuration. A graphical
-installer can present it in its normal confirmation. Revoking it stops the
+This is safe to run if an earlier build was installed with `plugin add`; the
+installer adopts that package and completes any missing consent or activation.
+The plugin supplies `xdg-state:omarchy/current` as its logical mount default.
+The host resolves that name, displays the exact directory and requested
+`appearance.provide.v1` access, and installs, grants, and enables only after one
+confirmation. The plugin never chooses the authoritative path itself. An
+unusual layout can override the default with
+`--bind omarchy-current=/absolute/path`. Revoking the grant later stops the
 provider without disabling the screensaver renderer.
 
 The manifest-provided `screensaver` profile then appears automatically while
@@ -71,12 +72,12 @@ profile for two seconds, long enough to show the newly resolved palette after
 the picker closes. Disable only this behavior with
 `touchbarctl plugin profile github:cameroncooper/touchbar-omarchy screensaver disable`.
 
-The command builds and validates the local package, installs it only into an
-isolated temporary store, asks the installed user session to yield its hardware
-connection, and launches the workspace session compositor. The privileged
-hardware service remains running throughout. Ctrl-C restores the installed user
-session automatically. Add `--sandboxed` when specifically testing production
-permissions and broker behavior.
+The earlier `plugin run` command builds and validates the local package,
+installs it only into an isolated temporary store, asks the installed user
+session to yield its hardware connection, and launches the workspace session
+compositor. The privileged hardware service remains running throughout. Ctrl-C
+restores the installed user session automatically. Add `--sandboxed` when
+specifically testing production permissions and broker behavior.
 
 `plugin replay --scenario tests/replay.json --screenshots DIR` renders the whole
 sequence — rest, a light and ripple crossing the field, a theme change
@@ -115,21 +116,24 @@ texture, browser, network access, or literal theme colors.
 ## Wearing the Omarchy theme
 
 The package publishes an `omarchy` appearance-provider contribution for exact
-`DESKTOP_SESSION=omarchy` matches. `touchbar-sessiond` reads only
-`theme/colors.toml` beneath the installer-bound `omarchy-current` directory,
-using symlink-free, beneath-root resolution and a 64 KiB limit. Omarchy can
-replace the complete `theme` directory during `omarchy theme set`; the stable
-parent binding remains valid and the next complete palette is accepted within
-250 ms. A missing or malformed replacement leaves the last valid palette live.
+`DESKTOP_SESSION=omarchy` matches. It runs a separate sandboxed WASM worker,
+independent of the visual screensaver component. The worker watches
+`$XDG_RUNTIME_DIR/omarchy-theme-selection`; while the picker is open it resolves
+the selected preview name against the approved user and system theme roots. At
+all other times it reads the committed `current/theme/colors.toml` palette.
 
-The provider supplies only scheme and semantic colors. The host assigns the
-generation, derives control states, owns motion and animation cadence, applies
-the snapshot atomically, and broadcasts it to every plugin. An explicit
-`TOUCHBAR_THEME` or existing `~/.config/touchbar/theme.toml` remains a higher
-priority user override. No symlink, generated copy, or Omarchy hook is needed.
-If you used the earlier bridge prototype, review and remove only its old
-`~/.config/touchbar/theme.toml` symlink/generated file and theme-set hook;
-otherwise that intentional higher-priority override will continue to win.
+All four roots are installer-owned bindings under `appearance.provide.v1`.
+Reads are bounded and resolved beneath those roots without parent traversal,
+symlink traversal, magic links, or mount crossing. The worker parses
+Omarchy-specific TOML and publishes a typed scheme plus six semantic colors.
+`touchbar-sessiond` knows no Omarchy paths or file format: it validates provider
+identity, arbitrates providers, assigns the generation, derives control states,
+and broadcasts the atomic snapshot. A missing or malformed transient palette
+leaves the last valid publication live.
+
+An explicit `TOUCHBAR_THEME` or existing `~/.config/touchbar/theme.toml` remains
+a higher-priority user override. No symlink, generated copy, or theme hook is
+needed.
 
 This is also what gives the field its identity. `accent` supplies the lit tone,
 `background` pulls it down into dim and mid pixels, and `foreground` lifts it

@@ -47,9 +47,8 @@ PNGs while retaining the complete machine-readable report on standard output.
 ## Local user loop
 
 ```text
-touchbarctl plugin add --path ./touchbar-plugin.touchbar
+touchbarctl plugin install --path ./touchbar-plugin.touchbar
 touchbarctl plugin inspect github:me/my-pack
-touchbarctl plugin enable github:me/my-pack
 touchbarctl plugin item github:me/my-pack main width 240
 touchbarctl plugin profile github:me/my-pack firefox disable
 touchbarctl plugin list
@@ -58,7 +57,17 @@ touchbarctl plugin disable github:me/my-pack
 touchbarctl plugin remove github:me/my-pack
 ```
 
-Install is disabled by default. Packages are copied into an immutable content-addressed directory;
+The high-level installer previews and validates the package, resolves safe
+manifest binding defaults, shows the exact permission plan, and then grants and
+enables it after one confirmation. `--bind`, `--endpoint`, `--secret`, and
+`--clipboard-socket` remain available when a default needs changing. Automation
+may pass `--yes`; a noninteractive install without it fails before installation.
+The command also adopts an identical package previously placed by low-level
+`plugin add`, and is a no-op when that package is already fully configured.
+
+`plugin add` remains the low-level, disabled-by-default primitive for tooling
+that deliberately manages consent and activation separately. Packages are
+copied into an immutable content-addressed directory;
 the installer-owned lock stores the canonical source, version, origin, package and artifact digests,
 enabled state, enabled items, item widths, and package-profile choices. Reinstalling the same source
 preserves matching item and profile choices; newly declared profiles follow their manifest default.

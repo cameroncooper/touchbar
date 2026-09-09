@@ -1,0 +1,9 @@
+[package]
+name = "touchbar-appearance-provider-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+touchbar-broker-schema = { path = "../touchbar-broker-schema" }
+wit-bindgen.workspace = true

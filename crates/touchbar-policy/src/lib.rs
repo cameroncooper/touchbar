@@ -21,6 +21,6 @@ pub use grant::{
     ClipboardBinding, Decision, EffectiveGrant, EffectivePolicy, FilesystemMountBinding,
     GrantBindings, GrantRecord, LocalEndpointBinding, PackageInstance, PermissionChange,
     PermissionChangeKind, PersistentGrants, Provenance, ReusePolicy, SecretBinding, SessionGrants,
-    calculate_effective_policy, diff_permissions,
+    StandardDirectoryBinding, calculate_effective_policy, diff_permissions,
 };
 pub use store::{GrantStore, StoreError};

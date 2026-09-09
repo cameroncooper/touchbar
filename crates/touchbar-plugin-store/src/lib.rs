@@ -131,6 +131,27 @@ pub struct PackageInspection {
     members: Vec<PackageMember>,
 }
 
+/// Validated package metadata which remains usable after an archive preview's
+/// temporary extraction directory has been removed.
+#[derive(Clone, Debug)]
+pub struct PackagePreview {
+    pub manifest: PluginManifest,
+    pub requests: Vec<CapabilityRequest>,
+    pub package_digest: String,
+    pub artifacts: BTreeMap<String, String>,
+}
+
+impl PackageInspection {
+    pub fn preview(&self) -> PackagePreview {
+        PackagePreview {
+            manifest: self.manifest.clone(),
+            requests: self.requests.clone(),
+            package_digest: self.package_digest.clone(),
+            artifacts: self.artifacts.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PackageMember {
     relative: PathBuf,
@@ -410,6 +431,18 @@ impl PluginStore {
         ensure_private_directory(&temporary)?;
         let result = unpack_archive(archive.as_ref(), &temporary)
             .and_then(|_| self.install_directory(&temporary));
+        let _ = fs::remove_dir_all(&temporary);
+        result
+    }
+
+    /// Validate an archive and return only durable metadata without installing
+    /// it or retaining its temporary extraction directory.
+    pub fn preview_archive(&self, archive: impl AsRef<Path>) -> Result<PackagePreview> {
+        let temporary = temporary_path(&self.paths.root, "preview");
+        ensure_private_directory(&temporary)?;
+        let result = unpack_archive(archive.as_ref(), &temporary)
+            .and_then(|_| inspect_package(&temporary))
+            .map(|inspection| inspection.preview());
         let _ = fs::remove_dir_all(&temporary);
         result
     }
@@ -1159,14 +1192,14 @@ pub fn sdk_context_markdown() -> String {
             "- Assets: declare bounded PNG or symbolic SVG files under `assets/`; render only by logical ID and use semantic mask/multiply tint\n",
             "- Presentations: declare package-local bars with container and per-item sizing; request them from input callbacks and handle compositor lifecycle events\n",
             "- Automatic profiles: declare package-local `[[profile]]` entries with exact lowercase `applications` and/or `activities`; use `show_in_default_profile = false` for contextual-only items; user rules retain precedence\n",
-            "- Appearance providers: declare a package-local `[[appearance-provider]]` with exact lowercase `desktop_sessions`, a relative palette path, and an `appearance.provide.v1` request for its logical installer-bound mount; explicit user themes retain precedence\n",
+            "- Appearance providers: declare a separate package-local appearance-provider component with exact lowercase `desktop_sessions`; its `appearance.provide.v1` worker receives only approved logical mounts and publishes a typed semantic palette, while explicit user themes retain precedence\n",
             "- Packages: stable item IDs, normalized relative artifact paths, no symlinks\n",
             "- Test widths: 80, 160, 320, 1004, and {MAX_TOUCHBAR_WIDTH} pixels at 60 pixels high plus every presentation width\n",
             "- Deterministic interaction: `touchbarctl plugin replay --scenario tests/interaction.json`; add `--screenshots DIR` for named GPU PNGs; use exact scope-checked D-Bus, HTTP, command, filesystem-read, local-service, notification, URI-open, clipboard, and secret-read fixtures for offline integration state; commit synthetic secret values only\n",
             "- Interactive development: `touchbarctl plugin dev` opens the whole pack in an isolated production-compositor desktop preview; simulator input is synthetic and cannot authorize OS actions\n",
-            "- Local workflow: `touchbarctl plugin check`, `test --format json`, `replay`, `dev`, `pack`, `add --path`, then `enable`\n",
+            "- Local workflow: `touchbarctl plugin check`, `test --format json`, `replay`, `dev`, `pack`, then `install --path` (permission review and enable are one transaction)\n",
             "- Release asset: `touchbar-plugin.touchbar` on a canonical `vMAJOR.MINOR.PATCH` GitHub Release\n",
-            "- User workflow: `touchbarctl plugin add github:owner/repository`, `update`, and offline `rollback`\n",
+            "- User workflow: `touchbarctl plugin install plugin-name`, `update`, and offline `rollback`; canonical GitHub sources work without a catalog listing\n",
         ),
         MANIFEST_FILE_NAME = MANIFEST_FILE_NAME,
         SUPPORTED_HOST_API_VERSION = SUPPORTED_HOST_API_VERSION,
@@ -1314,6 +1347,10 @@ applications = ["test-app"]
         let expected = pack_directory(source.path(), &archive).unwrap();
         let home = tempfile::tempdir().unwrap();
         let mut store = PluginStore::open(StorePaths::under(home.path().join("store"))).unwrap();
+        let preview = store.preview_archive(&archive).unwrap();
+        assert_eq!(preview.manifest.plugin.name, "Test");
+        assert_eq!(preview.package_digest, expected.package_digest);
+        assert_eq!(store.plugins().count(), 0);
         let installed = store.install_archive(&archive).unwrap();
         assert_eq!(installed.package_digest, expected.package_digest);
 

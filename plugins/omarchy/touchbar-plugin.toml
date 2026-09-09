@@ -13,9 +13,7 @@ kind = "component"
 entrypoint = "component/plugin.wasm"
 world = "touchbar:plugin/plugin@1.0.0"
 
-# The drawing component itself remains isolated. The package also contributes
-# a declarative appearance provider below; touchbar-sessiond reads its one
-# permission-bound palette file and remains the final appearance policy owner.
+# The drawing component and appearance provider are separate sandboxed workers.
 
 [[items]]
 id = "screensaver"
@@ -42,23 +40,16 @@ activities = ["omarchy-image-selector", "theme-change"]
 [[appearance-provider]]
 id = "omarchy"
 label = "Omarchy"
-mount = "omarchy-current"
-path = "theme/colors.toml"
+entrypoint = "component/appearance-provider.wasm"
+world = "touchbar:plugin/appearance-provider@1.0.0"
+build_package = "touchbar-omarchy-appearance-provider"
 desktop_sessions = ["omarchy"]
-
-[appearance-provider.fields]
-scheme = "mode"
-background = "background"
-foreground = "foreground"
-accent = "accent"
-selection = "selection"
-muted = "muted"
-destructive = "red"
+mounts = ["omarchy-runtime", "omarchy-current", "omarchy-user-themes", "omarchy-system-themes"]
 
 [[permission]]
 capability = "appearance.provide.v1"
-required = false
-reason = "Read the current Omarchy palette and offer it as the global Touch Bar appearance"
+required = true
+reason = "Watch Omarchy theme selection and publish its semantic Touch Bar palette"
 
 [permission.scope]
 providers = ["omarchy"]
@@ -66,5 +57,17 @@ maximum_file_bytes = 65536
 maximum_updates_per_second = 4
 
 [[permission.scope.mounts]]
+label = "omarchy-runtime"
+suggested_location = "xdg-runtime:"
+
+[[permission.scope.mounts]]
 label = "omarchy-current"
 suggested_location = "xdg-state:omarchy/current"
+
+[[permission.scope.mounts]]
+label = "omarchy-user-themes"
+suggested_location = "xdg-config:omarchy/themes"
+
+[[permission.scope.mounts]]
+label = "omarchy-system-themes"
+suggested_location = "system-data:omarchy/themes"

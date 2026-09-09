@@ -69,20 +69,20 @@ different theme policy.
 Source selection is host policy. `TOUCHBAR_THEME` has highest precedence,
 followed by an existing `~/.config/touchbar/theme.toml`, an eligible installed
 appearance provider, and finally the built-in dark palette. A package declares
-an `[[appearance-provider]]` with an exact desktop-session matcher, one
-permission-bound source mount and a relative TOML path. The provider is usable
-only while `appearance.provide.v1` authorizes both that mount and its
-package-local provider ID. This purpose-specific binding is not a generic
-filesystem capability available to rendering code.
+an `[[appearance-provider]]` with an exact desktop-session matcher and a
+separate component entrypoint implementing the appearance-provider world. The
+provider is usable only while `appearance.provide.v1` authorizes its
+package-local ID and its declared logical mounts. Capability requests are
+projected by component world: each provider receives only its own ID, mounts,
+bounded `read-file`, and typed `publish`, while rendering components neither
+receive that backend nor become blocked when provider consent is absent.
 
-The daemon securely reopens the installer-bound root, verifies its device and
-inode, and resolves the source without symlinks, parent traversal, magic links,
-or mount crossings. It accepts only complete bounded palettes and retains the
-last valid snapshot through incomplete atomic replacements. Providers supply
-scheme and semantic colors; the host owns motion, cadence, derived control
-roles, generation assignment, arbitration, and atomic publication. Revoking
-the grant removes the provider from selection without disabling its drawing
-items.
+The daemon never reads a provider file or interprets a desktop-specific format.
+It accepts only a complete typed semantic publication from the authenticated
+provider process. Providers supply scheme and semantic colors; the host owns
+motion, cadence, derived control roles, generation assignment, arbitration,
+and atomic publication. Revoking the grant removes the provider from selection
+without disabling its drawing items.
 
 ## Context transactions
 

@@ -17,7 +17,11 @@ PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
-ProtectControlGroups=true
+# The supervisor creates one bounded child cgroup per component host. Delegate
+# only the controllers it uses, and expose only this unit's writable subtree
+# rather than the host cgroup hierarchy.
+Delegate=cpu memory pids
+ProtectControlGroups=private
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 

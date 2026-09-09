@@ -32,27 +32,30 @@ document. `plugin run --when-application CLASS` remains the disposable
 on-device test path.
 
 Packages may also contribute an automatically matched global palette without
-teaching the compositor about a particular desktop. Declare an
-`[[appearance-provider]]` whose source is a relative path beneath a logical
-mount, then request `appearance.provide.v1` for the same package-local provider
-ID and mount. This purpose-specific mount is not exposed through the component
-broker as generic filesystem access. The host matches `desktop_sessions`,
-securely reads only the bounded palette document, assigns generations, and
-broadcasts one atomic semantic snapshot; plugin code does not write
-`theme.toml` or choose itself over an explicit user override.
+teaching the compositor about a particular desktop. Declare a separate
+`[[appearance-provider]]` component and request `appearance.provide.v1` for the
+same package-local provider ID and every logical mount its worker needs. The
+worker gets only two purpose-specific broker operations: bounded `read-file`
+under those approved mounts and typed semantic `publish`. It has no ambient
+filesystem access, and the visual renderer does not receive the provider
+backend. The host matches `desktop_sessions`, validates publications, assigns
+generations, and broadcasts one atomic snapshot; provider code cannot choose
+itself over an explicit user override.
 
 ```toml
 [[appearance-provider]]
 id = "desktop-theme"
 label = "Desktop theme"
-mount = "desktop-state"
-path = "current/theme/colors.toml"
+entrypoint = "component/appearance-provider.wasm"
+world = "touchbar:plugin/appearance-provider@1.0.0"
+build_package = "example-desktop-appearance-provider"
 desktop_sessions = ["example-desktop"]
+mounts = ["desktop-state"]
 
 [[permission]]
 capability = "appearance.provide.v1"
-required = false
-reason = "Offer desktop colors as the Touch Bar appearance"
+required = true
+reason = "Watch desktop appearance and publish Touch Bar colors"
 [permission.scope]
 providers = ["desktop-theme"]
 maximum_file_bytes = 65536
@@ -60,12 +63,25 @@ maximum_updates_per_second = 4
 
 [[permission.scope.mounts]]
 label = "desktop-state"
-suggested_location = "xdg-state:example/current"
+suggested_location = "xdg-state:example"
 ```
 
-Denying or revoking the optional grant disables only the provider; rendering
-items continue under the next selected host appearance. Consent binds the
-logical mount to an exact host directory, for example with
+The worker implements the `appearance-provider` world's `start`, `tick`, and
+`handle-host-event` exports, typically using
+`touchbar-appearance-provider-sdk`. `plugin build` builds the package named by
+`build_package` and copies its component to `entrypoint`.
+
+Denying or revoking the grant disables that provider worker. Rendering items
+continue under the next selected host appearance: permissions are projected by
+component world, so a required provider capability never blocks or leaks into
+the visual worker. Each provider's `mounts` list likewise projects only those
+logical roots into that worker. The normal installer turns the
+host-owned `xdg-config:`, `xdg-data:`, `xdg-state:`, `xdg-cache:`,
+`xdg-runtime:`, and `home:` hint vocabulary into typed standard-directory
+bindings, and resolves `system-data:` to one existing XDG system data path.
+These are logical path grants: legitimate directory replacement does not
+silently revoke consent, while every operation still rejects parent traversal,
+symlinks, magic links, and mount crossing. Users can override a default with
 `--bind desktop-state=/absolute/path`.
 
 Use theme roles from the UI protocol rather than fixed foreground/background colors. The daemon sends a fresh theme snapshot whenever the active palette changes. Layouts must render at any assigned width; use responsive variants and keep item IDs stable across releases. The canvas follows the attached panel, so never assume a particular total strip width. The component host supplies the manifest's canonical `github:owner/repository` source as the runtime plugin identity. A native runtime must pass that exact manifest source to `ClientOptions::new`; profiles identify a surface with the collision-free pair `{ plugin = "github:owner/repository", item = "local-item-id" }`.
@@ -162,9 +178,10 @@ The development loop is:
    an isolated workspace-session preview on the physical strip.
 8. `touchbarctl plugin pack`
 9. Test the resulting `touchbar-plugin.touchbar` with
-   `touchbarctl plugin add --path touchbar-plugin.touchbar`
+   `touchbarctl plugin install --path touchbar-plugin.touchbar`
 10. Attach that exact asset name to a canonical `vMAJOR.MINOR.PATCH` GitHub
-   Release. Users install it with `touchbarctl plugin add github:owner/repository`.
+   Release. Users install it with `touchbarctl plugin install plugin-name` when
+   cataloged, or `touchbarctl plugin install github:owner/repository` directly.
 11. Optionally run `touchbarctl plugin submit --alias ALIAS --categories a,b`
    and propose the emitted entry for the reviewed discovery catalog.
 

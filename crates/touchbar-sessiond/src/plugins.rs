@@ -1,11 +1,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    os::{fd::AsRawFd, unix::process::CommandExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
+use touchbar_broker_schema::AppearancePublish;
 use touchbar_control::ProcessStatus;
 use touchbar_package::{
     AppearanceProvider, AutomaticProfile, GithubSource, PluginManifest, PresentationBar,
@@ -16,7 +18,7 @@ use touchbar_plugin_store::{
 };
 use touchbar_policy::{
     CapabilityId, CapabilityRegistry, CapabilityRequest, CapabilityScope, EffectivePolicy,
-    FilesystemMountBinding, GrantStore, PackageInstance, Provenance, RuntimeKind, SessionGrants,
+    GrantStore, PackageInstance, Provenance, RuntimeKind, SessionGrants,
     calculate_effective_policy,
 };
 use touchbar_profile_config::{
@@ -24,12 +26,16 @@ use touchbar_profile_config::{
     ProfileElementConfig, ProfileItemConfig, ProfileItemRefConfig, ProfileRuleConfig, ScopeConfig,
     SlotPolicyConfig,
 };
+use touchbar_protocol::broker_ipc::Seqpacket;
 
-use crate::appearance::ProviderSource;
+use crate::appearance::ProviderIdentity;
 
 const MAX_AUTOMATIC_RESTARTS: u32 = 8;
 const CHILD_STATUS_INTERVAL: Duration = Duration::from_millis(250);
 const POLICY_STATUS_INTERVAL: Duration = Duration::from_millis(250);
+const APPEARANCE_SINK_FD: i32 = 7;
+const APPEARANCE_SINK_FD_ENV: &str = "TOUCHBAR_APPEARANCE_SINK_FD";
+const APPEARANCE_PROCESS_PREFIX: &str = "appearance-provider:";
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct Key {
@@ -44,6 +50,11 @@ enum Launch {
         asset_digests: Vec<(String, String)>,
     },
     TrustedComponent,
+    AppearanceProvider {
+        identity: ProviderIdentity,
+        digest: String,
+        package_digest: String,
+    },
     Native {
         executable: PathBuf,
     },
@@ -66,6 +77,43 @@ struct PolicyInput {
     requests: Vec<CapabilityRequest>,
 }
 
+impl PolicyInput {
+    fn visual_worker(&self) -> Self {
+        Self {
+            package: self.package.clone(),
+            requests: self
+                .requests
+                .iter()
+                .filter(|request| request.capability != CapabilityId::AppearanceProvideV1)
+                .cloned()
+                .collect(),
+        }
+    }
+
+    fn appearance_worker(&self, provider: &AppearanceProvider) -> Self {
+        let mounts = provider.mounts.iter().collect::<BTreeSet<_>>();
+        let requests = self
+            .requests
+            .iter()
+            .filter_map(|request| {
+                let CapabilityScope::AppearanceProvide(mut scope) = request.scope.clone() else {
+                    return None;
+                };
+                scope.providers.retain(|id| id == &provider.id);
+                scope.mounts.retain(|mount| mounts.contains(&mount.label));
+                Some(CapabilityRequest {
+                    scope: CapabilityScope::AppearanceProvide(scope),
+                    ..request.clone()
+                })
+            })
+            .collect();
+        Self {
+            package: self.package.clone(),
+            requests,
+        }
+    }
+}
+
 struct Managed {
     desired: Desired,
     child: Option<Child>,
@@ -74,11 +122,13 @@ struct Managed {
     detail: Option<String>,
     stopped: bool,
     permission_blocked: bool,
+    appearance_channel: Option<Seqpacket>,
 }
 
 impl Managed {
     fn record_failure(&mut self, detail: String, now: Instant) {
         self.child = None;
+        self.appearance_channel = None;
         self.restarts = self.restarts.saturating_add(1);
         self.detail = Some(detail);
         self.stopped = self.restarts >= MAX_AUTOMATIC_RESTARTS;
@@ -147,7 +197,7 @@ pub struct PackagedProfileCatalog {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AppearanceProviderCatalog {
-    active: Option<ProviderSource>,
+    active: Option<ProviderIdentity>,
     declared: usize,
     eligible: usize,
 }
@@ -157,7 +207,6 @@ impl AppearanceProviderCatalog {
         &mut self,
         manifest: &PluginManifest,
         policy: Option<&EffectivePolicy>,
-        trusted_components: bool,
         desktop_sessions: &BTreeSet<String>,
     ) {
         self.declared = self
@@ -171,11 +220,7 @@ impl AppearanceProviderCatalog {
             {
                 continue;
             }
-            let candidate = if trusted_components {
-                trusted_provider_source(manifest, provider)
-            } else {
-                authorized_provider_source(manifest, provider, policy)
-            };
+            let candidate = authorized_provider_identity(manifest, provider, policy);
             let Some(candidate) = candidate else {
                 continue;
             };
@@ -188,7 +233,7 @@ impl AppearanceProviderCatalog {
         }
     }
 
-    pub fn active(&self) -> Option<ProviderSource> {
+    pub fn active(&self) -> Option<ProviderIdentity> {
         self.active.clone()
     }
 
@@ -424,13 +469,13 @@ fn desktop_session_identities() -> BTreeSet<String> {
     .collect()
 }
 
-fn authorized_provider_source(
+fn authorized_provider_identity(
     manifest: &PluginManifest,
     provider: &AppearanceProvider,
     policy: Option<&EffectivePolicy>,
-) -> Option<ProviderSource> {
+) -> Option<ProviderIdentity> {
     let policy = policy?;
-    let appearance = policy.grants.iter().find(|grant| {
+    policy.grants.iter().find(|grant| {
         grant.allows()
             && grant.request.capability == CapabilityId::AppearanceProvideV1
             && matches!(
@@ -438,101 +483,11 @@ fn authorized_provider_source(
                 CapabilityScope::AppearanceProvide(scope) if scope.providers.contains(&provider.id)
             )
     })?;
-    let (maximum_file_bytes, maximum_updates_per_second, mount) = match &appearance.request.scope {
-        CapabilityScope::AppearanceProvide(scope) => (
-            scope.maximum_file_bytes,
-            scope.maximum_updates_per_second,
-            appearance
-                .bindings
-                .filesystem_mounts
-                .get(&provider.mount)?
-                .clone(),
-        ),
-        _ => return None,
-    };
-    Some(provider_source(
-        manifest,
-        provider,
-        mount,
-        maximum_file_bytes,
-        maximum_updates_per_second,
-    ))
-}
-
-fn trusted_provider_source(
-    manifest: &PluginManifest,
-    provider: &AppearanceProvider,
-) -> Option<ProviderSource> {
-    let requests = touchbar_policy::CapabilityRegistry::default()
-        .normalize(manifest)
-        .ok()?;
-    let scope = requests
-        .into_iter()
-        .find_map(|request| match request.scope {
-            CapabilityScope::AppearanceProvide(scope)
-                if scope.providers.contains(&provider.id)
-                    && scope
-                        .mounts
-                        .iter()
-                        .any(|mount| mount.label == provider.mount) =>
-            {
-                Some(scope)
-            }
-            _ => None,
-        })?;
-    let hint = scope
-        .mounts
-        .iter()
-        .find(|mount| mount.label == provider.mount)?
-        .suggested_location
-        .as_deref()?;
-    let path = resolve_development_hint(hint)?;
-    let mount = FilesystemMountBinding::from_directory(path).ok()?;
-    Some(provider_source(
-        manifest,
-        provider,
-        mount,
-        scope.maximum_file_bytes,
-        scope.maximum_updates_per_second,
-    ))
-}
-
-fn resolve_development_hint(hint: &str) -> Option<PathBuf> {
-    let relative = hint.strip_prefix("xdg-state:")?;
-    let relative = Path::new(relative);
-    if relative.as_os_str().is_empty()
-        || relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
-        return None;
-    }
-    let root = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
-        })?;
-    Some(root.join(relative))
-}
-
-fn provider_source(
-    manifest: &PluginManifest,
-    provider: &AppearanceProvider,
-    mount: FilesystemMountBinding,
-    maximum_file_bytes: u64,
-    maximum_updates_per_second: u16,
-) -> ProviderSource {
-    ProviderSource {
+    Some(ProviderIdentity {
         plugin: manifest.plugin.source.to_string(),
         id: provider.id.clone(),
         label: provider.label.clone(),
-        mount,
-        path: PathBuf::from(&provider.path),
-        fields: provider.fields.clone(),
-        maximum_file_bytes,
-        maximum_updates_per_second,
-    }
+    })
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -703,6 +658,7 @@ impl PluginManager {
                 detail: None,
                 stopped: false,
                 permission_blocked: false,
+                appearance_channel: None,
             };
             start(
                 &self.supervisor,
@@ -725,12 +681,40 @@ impl PluginManager {
         Ok(())
     }
 
-    pub fn poll(&mut self) {
+    pub fn poll(&mut self) -> Vec<ProviderPublication> {
+        let mut publications = Vec::new();
         let now = Instant::now();
         if now >= self.next_policy_refresh {
             self.refresh_permission_states();
         }
         for process in self.processes.values_mut() {
+            if let (Launch::AppearanceProvider { identity, .. }, Some(channel)) =
+                (&process.desired.launch, &process.appearance_channel)
+            {
+                for _ in 0..32 {
+                    match channel.try_recv_payload() {
+                        Ok(Some(payload)) => match AppearancePublish::decode(&payload) {
+                            Ok(publication) if publication.provider == identity.id => {
+                                publications.push(ProviderPublication {
+                                    identity: identity.clone(),
+                                    publication,
+                                });
+                            }
+                            Ok(_) => {
+                                process.detail = Some(
+                                    "appearance provider published a mismatched identity".into(),
+                                );
+                            }
+                            Err(_) => {
+                                process.detail =
+                                    Some("appearance provider published malformed data".into());
+                            }
+                        },
+                        Ok(None) => break,
+                        Err(_) => break,
+                    }
+                }
+            }
             if let Some(child) = &mut process.child {
                 match child.try_wait() {
                     Ok(Some(status)) => {
@@ -752,6 +736,7 @@ impl PluginManager {
                 );
             }
         }
+        publications
     }
 
     /// Child exit is the sole source that does not currently expose a pollable
@@ -782,7 +767,7 @@ impl PluginManager {
     }
 
     pub fn status(&mut self) -> Vec<ProcessStatus> {
-        self.poll();
+        let _ = self.poll();
         self.processes
             .values()
             .map(|process| ProcessStatus {
@@ -807,8 +792,15 @@ impl PluginManager {
         &self.profiles
     }
 
-    pub fn appearance_provider(&self) -> Option<ProviderSource> {
+    pub fn appearance_provider(&self) -> Option<ProviderIdentity> {
         self.appearance_providers.active()
+    }
+
+    pub fn appearance_notification_fds(&self) -> Vec<i32> {
+        self.processes
+            .values()
+            .filter_map(|process| process.appearance_channel.as_ref().map(AsRawFd::as_raw_fd))
+            .collect()
     }
 
     pub fn unavailable_reason(&self, qualified_item: &str) -> Option<UnavailableReason> {
@@ -839,6 +831,12 @@ impl PluginManager {
         }
         self.next_policy_refresh = Instant::now() + POLICY_STATUS_INTERVAL;
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderPublication {
+    pub identity: ProviderIdentity,
+    pub publication: AppearancePublish,
 }
 
 impl Drop for PluginManager {
@@ -949,32 +947,34 @@ fn desired_state(
             }
             _ => bail!("installed runtime does not match package manifest"),
         };
-        let policy = (!trusted_components
-            && matches!(installed.runtime, InstalledRuntime::Component))
-        .then(|| {
-            let registry = CapabilityRegistry::default();
-            Ok::<_, anyhow::Error>(PolicyInput {
-                package: PackageInstance {
-                    source: installed.source.clone(),
-                    version: installed.version.clone(),
-                    digest: installed.package_digest.clone(),
-                    provenance: provenance(&installed.origin),
-                    runtime: RuntimeKind::Component,
-                },
-                requests: registry.normalize(&inspected.manifest).map_err(|errors| {
-                    anyhow::anyhow!(
-                        "invalid component permissions: {}",
-                        errors
-                            .into_iter()
-                            .map(|error| error.to_string())
-                            .collect::<Vec<_>>()
-                            .join("; ")
-                    )
-                })?,
+        let component_policy = matches!(installed.runtime, InstalledRuntime::Component)
+            .then(|| {
+                let registry = CapabilityRegistry::default();
+                Ok::<_, anyhow::Error>(PolicyInput {
+                    package: PackageInstance {
+                        source: installed.source.clone(),
+                        version: installed.version.clone(),
+                        digest: installed.package_digest.clone(),
+                        provenance: provenance(&installed.origin),
+                        runtime: RuntimeKind::Component,
+                    },
+                    requests: registry.normalize(&inspected.manifest).map_err(|errors| {
+                        anyhow::anyhow!(
+                            "invalid component permissions: {}",
+                            errors
+                                .into_iter()
+                                .map(|error| error.to_string())
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        )
+                    })?,
+                })
             })
-        })
-        .transpose()?;
-        let effective_policy = policy.as_ref().map(|policy| {
+            .transpose()?;
+        let policy = (!trusted_components)
+            .then(|| component_policy.as_ref().map(PolicyInput::visual_worker))
+            .flatten();
+        let effective_policy = component_policy.as_ref().map(|policy| {
             calculate_effective_policy(
                 &policy.package,
                 &policy.requests,
@@ -986,9 +986,50 @@ fn desired_state(
         appearance_providers.add_manifest(
             &inspected.manifest,
             effective_policy.as_ref(),
-            trusted_components,
             &desktop_sessions,
         );
+        for provider in &inspected.manifest.appearance_providers {
+            if !provider
+                .desktop_sessions
+                .iter()
+                .any(|session| desktop_sessions.contains(session))
+            {
+                continue;
+            }
+            let identity = ProviderIdentity {
+                plugin: installed.source.to_string(),
+                id: provider.id.clone(),
+                label: provider.label.clone(),
+            };
+            let key = Key {
+                source: installed.source.to_string(),
+                item: format!("{APPEARANCE_PROCESS_PREFIX}{}", provider.id),
+            };
+            let desired = Desired {
+                key: key.clone(),
+                package: package_path.clone(),
+                version: installed.version.to_string(),
+                provenance: provenance_arg(&installed.origin).into(),
+                width: 0,
+                launch: Launch::AppearanceProvider {
+                    identity,
+                    digest: installed
+                        .artifacts
+                        .get(&provider.entrypoint)
+                        .with_context(|| {
+                            format!("appearance provider digest is missing for {}", provider.id)
+                        })?
+                        .clone(),
+                    package_digest: installed.package_digest.clone(),
+                },
+                policy: component_policy
+                    .as_ref()
+                    .map(|policy| policy.appearance_worker(provider)),
+            };
+            if output.insert(key, desired).is_some() {
+                bail!("duplicate appearance provider process key")
+            }
+        }
         for item in installed.items.iter().filter(|item| item.enabled) {
             let key = Key {
                 source: installed.source.to_string(),
@@ -1012,7 +1053,7 @@ fn desired_state(
 }
 
 fn start(supervisor: &Path, host: &Path, paths: &StorePaths, display: &str, process: &mut Managed) {
-    let result = match &process.desired.launch {
+    let result: Result<(Child, Option<Seqpacket>)> = (|| match &process.desired.launch {
         Launch::Component {
             digest,
             asset_digests,
@@ -1030,6 +1071,9 @@ fn start(supervisor: &Path, host: &Path, paths: &StorePaths, display: &str, proc
                     "--digest",
                     digest,
                 ]);
+            if let Some(policy) = &process.desired.policy {
+                command.arg("--package-digest").arg(&policy.package.digest);
+            }
             for (id, digest) in asset_digests {
                 command.arg("--asset-digest").arg(format!("{id}={digest}"));
             }
@@ -1054,6 +1098,8 @@ fn start(supervisor: &Path, host: &Path, paths: &StorePaths, display: &str, proc
                 .env("WAYLAND_DISPLAY", display)
                 .stdin(Stdio::null())
                 .spawn()
+                .map(|child| (child, None))
+                .map_err(Into::into)
         }
         Launch::TrustedComponent => Command::new(host)
             .arg(&process.desired.package)
@@ -1066,7 +1112,62 @@ fn start(supervisor: &Path, host: &Path, paths: &StorePaths, display: &str, proc
             ])
             .env("WAYLAND_DISPLAY", display)
             .stdin(Stdio::null())
-            .spawn(),
+            .spawn()
+            .map(|child| (child, None))
+            .map_err(Into::into),
+        Launch::AppearanceProvider {
+            identity,
+            digest,
+            package_digest,
+        } => {
+            let (session_channel, supervisor_channel) = Seqpacket::pair()?;
+            let source = supervisor_channel.as_raw_fd();
+            let mut command = Command::new(supervisor);
+            command
+                .arg(&process.desired.package)
+                .arg("--host")
+                .arg(host)
+                .args([
+                    "--source",
+                    &process.desired.key.source,
+                    "--version",
+                    &process.desired.version,
+                    "--digest",
+                    digest,
+                    "--package-digest",
+                    package_digest,
+                    "--appearance-provider",
+                    &identity.id,
+                    "--provenance",
+                    &process.desired.provenance,
+                ])
+                .arg("--state")
+                .arg(&paths.state)
+                .arg("--grants")
+                .arg(&paths.grants)
+                .arg("--session-grants")
+                .arg(&paths.session_grants)
+                .arg("--audit")
+                .arg(&paths.audit)
+                .env(APPEARANCE_SINK_FD_ENV, APPEARANCE_SINK_FD.to_string())
+                .stdin(Stdio::null());
+            // SAFETY: the closure performs only descriptor duplication before
+            // exec of the trusted supervisor.
+            unsafe {
+                command.pre_exec(move || {
+                    if source != APPEARANCE_SINK_FD && libc::dup2(source, APPEARANCE_SINK_FD) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::fcntl(APPEARANCE_SINK_FD, libc::F_SETFD, 0) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let child = command.spawn()?;
+            drop(supervisor_channel);
+            Ok((child, Some(session_channel)))
+        }
         Launch::Native { executable } => Command::new(executable)
             .args([
                 "--live",
@@ -1077,11 +1178,14 @@ fn start(supervisor: &Path, host: &Path, paths: &StorePaths, display: &str, proc
             ])
             .env("WAYLAND_DISPLAY", display)
             .stdin(Stdio::null())
-            .spawn(),
-    };
+            .spawn()
+            .map(|child| (child, None))
+            .map_err(Into::into),
+    })();
     match result {
-        Ok(child) => {
+        Ok((child, appearance_channel)) => {
             process.child = Some(child);
+            process.appearance_channel = appearance_channel;
             process.detail = None;
         }
         Err(error) => {
@@ -1136,7 +1240,9 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use touchbar_model::{ContextSnapshot, ContextValue};
-    use touchbar_policy::{Decision, GrantBindings, GrantRecord, ReusePolicy};
+    use touchbar_policy::{
+        Decision, FilesystemMountBinding, GrantBindings, GrantRecord, ReusePolicy,
+    };
 
     fn managed() -> Managed {
         Managed {
@@ -1160,6 +1266,7 @@ mod tests {
             detail: None,
             stopped: false,
             permission_blocked: false,
+            appearance_channel: None,
         }
     }
 
@@ -1358,9 +1465,10 @@ label = "Screensaver"
 [[appearance-provider]]
 id = "omarchy"
 label = "Omarchy"
-mount = "omarchy-current"
-path = "theme/colors.toml"
+entrypoint = "component/appearance-provider.wasm"
+world = "touchbar:plugin/appearance-provider@1.0.0"
 desktop_sessions = ["omarchy"]
+mounts = ["omarchy-current"]
 [[permission]]
 capability = "appearance.provide.v1"
 required = false
@@ -1394,7 +1502,6 @@ suggested_location = "xdg-state:omarchy/current"
         catalog.add_manifest(
             &manifest,
             Some(&no_grants),
-            false,
             &BTreeSet::from(["omarchy".into()]),
         );
         assert!(catalog.active().is_none());
@@ -1440,7 +1547,6 @@ suggested_location = "xdg-state:omarchy/current"
         catalog.add_manifest(
             &manifest,
             Some(&authorized),
-            false,
             &BTreeSet::from(["omarchy".into()]),
         );
         let active = catalog.active().unwrap();
@@ -1451,7 +1557,6 @@ suggested_location = "xdg-state:omarchy/current"
         wrong_desktop.add_manifest(
             &manifest,
             Some(&authorized),
-            false,
             &BTreeSet::from(["gnome".into()]),
         );
         assert!(wrong_desktop.active().is_none());

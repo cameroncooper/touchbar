@@ -623,23 +623,66 @@ pub fn normalize_manifest_permissions(
         }
     }
     if errors.is_empty() {
+        let appearance_scope = requests.iter().find_map(|request| match &request.scope {
+            CapabilityScope::AppearanceProvide(scope) => Some(scope),
+            _ => None,
+        });
+        let declared_provider_ids = manifest
+            .appearance_providers
+            .iter()
+            .map(|provider| provider.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let declared_mounts = manifest
+            .appearance_providers
+            .iter()
+            .flat_map(|provider| provider.mounts.iter().map(String::as_str))
+            .collect::<BTreeSet<_>>();
         for (index, provider) in manifest.appearance_providers.iter().enumerate() {
             let prefix = format!("appearance-provider[{index}]");
-            let appearance_authorized = requests.iter().any(|request| {
-                matches!(
-                    &request.scope,
-                    CapabilityScope::AppearanceProvide(scope)
-                        if scope.providers.contains(&provider.id)
-                            && scope.mounts.iter().any(|mount| mount.label == provider.mount)
-                )
-            });
+            let appearance_authorized =
+                appearance_scope.is_some_and(|scope| scope.providers.contains(&provider.id));
             if !appearance_authorized {
                 errors.push(NormalizationError {
                     field: format!("{prefix}.id"),
                     message: format!(
-                        "provider `{}` and mount `{}` must be listed by appearance.provide.v1",
-                        provider.id, provider.mount
+                        "provider `{}` must be listed by appearance.provide.v1",
+                        provider.id
                     ),
+                });
+            }
+            for mount in &provider.mounts {
+                if !appearance_scope
+                    .is_some_and(|scope| scope.mounts.iter().any(|request| request.label == *mount))
+                {
+                    errors.push(NormalizationError {
+                        field: format!("{prefix}.mounts"),
+                        message: format!("mount `{mount}` must be listed by appearance.provide.v1"),
+                    });
+                }
+            }
+        }
+        if let Some(scope) = appearance_scope {
+            let requested_provider_ids = scope
+                .providers
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            if requested_provider_ids != declared_provider_ids {
+                errors.push(NormalizationError {
+                    field: "permission.scope.providers".into(),
+                    message: "appearance provider IDs must exactly match declared workers".into(),
+                });
+            }
+            let requested_mounts = scope
+                .mounts
+                .iter()
+                .map(|mount| mount.label.as_str())
+                .collect::<BTreeSet<_>>();
+            if requested_mounts != declared_mounts {
+                errors.push(NormalizationError {
+                    field: "permission.scope.mounts".into(),
+                    message: "appearance mounts must exactly match worker mount declarations"
+                        .into(),
                 });
             }
         }

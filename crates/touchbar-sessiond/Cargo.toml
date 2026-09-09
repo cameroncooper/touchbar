@@ -13,6 +13,7 @@ memmap2.workspace = true
 tempfile.workspace = true
 toml.workspace = true
 touchbar-control = { path = "../touchbar-control" }
+touchbar-broker-schema = { path = "../touchbar-broker-schema" }
 touchbar-protocol = { path = "../touchbar-protocol" }
 touchbar-package = { path = "../touchbar-package" }
 touchbar-plugin-store = { path = "../touchbar-plugin-store" }

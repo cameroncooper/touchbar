@@ -553,3 +553,15 @@ world plugin {
     export handle-presentation-event: func(event: presentation-event) -> result<update, string>;
     export handle-host-event: func(event: host-event) -> result<update, string>;
 }
+
+/// A package-owned background worker that can publish semantic appearance
+/// values without being coupled to any visual item or compositor surface.
+world appearance-provider {
+    use broker.{host-event};
+
+    import broker;
+
+    export start: func(provider-id: string) -> result<_, string>;
+    export tick: func() -> result<_, string>;
+    export handle-host-event: func(event: host-event) -> result<_, string>;
+}

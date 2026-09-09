@@ -9,23 +9,39 @@ Commands and paths below are historical and may predate later renames.
 
 ---
 
+## One-step plugin installation
+
+`touchbarctl plugin install plugin-name` now replaces the normal
+add–grant–enable sequence. It validates and previews the package without
+installing it, resolves only allowlisted manifest location defaults, displays
+the exact permission plan, persists the whole grant batch atomically, and
+enables the plugin last. Local archives and directories use the same flow via
+`--path`; canonical GitHub identities work without a catalog entry. The
+low-level `add`, `permission`, and `enable` commands remain available for
+controllers and troubleshooting. Re-running `install` adopts an identical
+package previously placed by `add`, or reports success without changing an
+already configured installation.
+
+---
+
 ## Permission-scoped appearance providers
 
-Plugin packages may now contribute declarative `[[appearance-provider]]`
-sources. A provider becomes eligible only when its exact desktop session
-matches and the package has a bounded `appearance.provide.v1` grant for its
-source mount and provider ID. The purpose-specific mount is never exposed as
-generic filesystem access to rendering code.
-`touchbar-sessiond` securely reopens the granted root on every read, rejects
-symlinks, mount crossings, oversized or malformed palettes, retains the last
-valid generation during an incomplete replacement, and remains the sole owner
-of source selection and atomic appearance publication.
+Plugin packages may now contribute sandboxed `[[appearance-provider]]` workers.
+A provider becomes eligible only when its exact desktop session matches and
+the package has a bounded `appearance.provide.v1` grant for its provider ID and
+logical mounts. Those mounts are available only through the provider worker's
+purpose-specific read operation, never as ambient WASI access or generic
+renderer authority. Worker-world projection gives each provider only its own
+declared ID and mounts; required provider consent never blocks drawing items.
+The worker publishes one typed semantic palette over its
+authenticated supervisor channel; `touchbar-sessiond` remains generic and owns
+provider arbitration, derived roles, generation assignment, and atomic
+broadcast.
 
-The Omarchy pack uses this contract for
-`~/.local/state/omarchy/current/theme/colors.toml`. Because Omarchy replaces
-the `theme` directory, the permission binds the stable `current` parent. The
-old symlink/generated-hook bridge is gone; explicit `TOUCHBAR_THEME` and user
-`theme.toml` files still take precedence.
+The Omarchy worker watches the generic theme picker's live-selection file,
+resolves the selected theme against approved user/system theme roots, and falls
+back to the committed current palette when the picker closes. Explicit
+`TOUCHBAR_THEME` and user `theme.toml` files still take precedence.
 
 ---
 
@@ -118,8 +134,9 @@ See [PLAN.md](PLAN.md) for the architecture and milestone breakdown.
 The decentralized GitHub package model and sandboxed Component runtime are in
 [the plugin ecosystem plan](docs/design/plugin-ecosystem.md).
 `touchbarctl plugin search` queries the reviewed catalog bundled with this core
-build, while `touchbarctl plugin add github:owner/repository` or an exact GitHub
-URL installs any compatible public pack without requiring catalog approval.
+build. `touchbarctl plugin install plugin-name` reviews permissions, installs,
+grants, and enables a cataloged pack in one flow; a canonical
+`github:owner/repository` or exact GitHub URL works without catalog approval.
 Publishers can generate a PR-ready listing with `touchbarctl plugin submit`;
 the contribution contract lives in [catalog/README.md](catalog/README.md).
 Generated release workflows use the native `touchbarctl plugin publish`

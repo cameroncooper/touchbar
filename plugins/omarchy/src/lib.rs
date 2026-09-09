@@ -18,9 +18,9 @@
 //! set` recolors both the drawing and the running shader without this code
 //! rendering again. `palette` exists to make that visible in one glance.
 //!
-//! The drawing component requests no broker access. The package's optional
-//! appearance-provider permission is consumed entirely by the session daemon;
-//! it never exposes the palette file or its literal values to this code.
+//! The drawing component requests no broker access. A separate sandboxed
+//! appearance-provider worker watches Omarchy and publishes semantic colors;
+//! it never exposes palette files or literal values to this visual component.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

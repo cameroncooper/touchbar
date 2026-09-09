@@ -146,13 +146,32 @@ impl GrantStore {
         path: impl AsRef<Path>,
         record: GrantRecord,
     ) -> Result<Option<GrantRecord>, StoreError> {
-        record.validate().map_err(StoreError::Invalid)?;
+        Ok(Self::update_records(path, [record])?
+            .into_iter()
+            .next()
+            .expect("one record produces one result"))
+    }
+
+    /// Atomically loads, updates, and saves a complete consent decision batch.
+    /// Installers use this so a multi-capability confirmation cannot persist
+    /// only a prefix of the grants the user reviewed.
+    pub fn update_records(
+        path: impl AsRef<Path>,
+        records: impl IntoIterator<Item = GrantRecord>,
+    ) -> Result<Vec<Option<GrantRecord>>, StoreError> {
+        let records = records.into_iter().collect::<Vec<_>>();
+        for record in &records {
+            record.validate().map_err(StoreError::Invalid)?;
+        }
         let path = path.as_ref();
         let parent = store_parent(path)?;
         ensure_private_directory(parent)?;
         let _lock = StoreLock::acquire(parent.join(".permissions.lock"))?;
         let mut store = Self::load(path)?;
-        let previous = store.insert(record)?;
+        let mut previous = Vec::with_capacity(records.len());
+        for record in records {
+            previous.push(store.insert(record)?);
+        }
         store.save_locked(path, parent)?;
         Ok(previous)
     }

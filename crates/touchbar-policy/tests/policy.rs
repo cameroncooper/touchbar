@@ -55,12 +55,35 @@ fn concurrent_consent_updates_do_not_lose_unrelated_records() {
     assert_eq!(stored.records().count(), 2);
 }
 
+#[test]
+fn consent_batches_are_all_or_nothing() {
+    let temporary = tempdir().unwrap();
+    let path = temporary.path().join("private/permissions.toml");
+    let first = grant(
+        CapabilityId::HttpRequestV1,
+        https_scope("/first/", false, 4096),
+        Decision::Allow,
+        ReusePolicy::ExactDigest,
+    );
+    let mut second = first.clone();
+    second.source = GithubSource::new("bob", "touchbar-weather").unwrap();
+    second.approved_scope = https_scope("/second/", false, 4096);
+
+    GrantStore::update_records(&path, [first.clone(), second]).unwrap();
+    let before = GrantStore::load(&path).unwrap();
+    assert_eq!(before.records().count(), 2);
+
+    let mut changed = first.clone();
+    changed.approved_scope = https_scope("/changed/", false, 4096);
+    let mut invalid = first;
+    invalid.source = GithubSource::new("carol", "touchbar-invalid").unwrap();
+    invalid.approved_digest = "not-a-digest".into();
+    assert!(GrantStore::update_records(&path, [changed, invalid]).is_err());
+    assert_eq!(GrantStore::load(&path).unwrap(), before);
+}
+
 fn mount_binding(path: impl Into<PathBuf>) -> FilesystemMountBinding {
-    FilesystemMountBinding {
-        path: path.into(),
-        device: 1,
-        inode: 1,
-    }
+    FilesystemMountBinding::Path { path: path.into() }
 }
 
 fn manifest_with_permissions(permissions: &str) -> PluginManifest {
@@ -209,6 +232,14 @@ maximum_updates_per_second = 4
 fn appearance_provider_permission_is_controlling_and_scope_bounded() {
     let manifest = manifest_with_permissions(
         r#"
+[[appearance-provider]]
+id = "desktop-theme"
+label = "Desktop theme"
+entrypoint = "component/appearance-provider.wasm"
+world = "touchbar:plugin/appearance-provider@1.0.0"
+desktop_sessions = ["example"]
+mounts = ["desktop-state"]
+
 [[permission]]
 capability = "appearance.provide.v1"
 required = false
@@ -802,8 +833,10 @@ fn filesystem_grants_require_exact_host_owned_normalized_mount_bindings() {
         ReusePolicy::ExactDigest,
     );
     assert_eq!(
-        record.bindings.filesystem_mounts["gallery"].path,
-        PathBuf::from("/approved/gallery")
+        record.bindings.filesystem_mounts["gallery"],
+        FilesystemMountBinding::Path {
+            path: PathBuf::from("/approved/gallery")
+        }
     );
     let mut store = GrantStore::default();
     store.insert(record.clone()).unwrap();

@@ -20,6 +20,33 @@ probe_unit="$probe_id.service"
 probe_control="${XDG_RUNTIME_DIR:?}/$probe_id.sock"
 
 set +e
+cgroup_output=$(systemd-run --user --wait --collect --pipe \
+    --unit="$probe_id-cgroup.service" \
+    --property='Delegate=cpu memory pids' \
+    --property=ProtectControlGroups=private \
+    /usr/bin/bash -c '
+        set -e
+        probe=/sys/fs/cgroup/touchbar-delegation-probe
+        mkdir "$probe"
+        # These two cgroup-v2 controls are mandatory in the supervisor. CPU,
+        # memory, and PID controls are applied when the delegated controller
+        # files are present, with rlimits as the documented fallback.
+        for control in cgroup.procs cgroup.kill; do
+            test -w "$probe/$control"
+        done
+        rmdir "$probe"
+    ' 2>&1)
+cgroup_status=$?
+set -e
+
+printf '%s\n' "$cgroup_output"
+if [[ $cgroup_status -ne 0 ]] \
+    || ! grep -Fq 'Finished with result: success' <<<"$cgroup_output"; then
+    echo "private delegated cgroup probe failed" >&2
+    exit 1
+fi
+
+set +e
 probe_output=$(systemd-run --user --wait --collect --pipe \
     --unit="$probe_unit" \
     --property=RuntimeMaxSec=2s \
@@ -30,8 +57,8 @@ probe_output=$(systemd-run --user --wait --collect --pipe \
     --property=ProtectKernelTunables=true \
     --property=ProtectKernelModules=true \
     --property=ProtectKernelLogs=true \
-    --property=ProtectControlGroups=true \
-    --property=RestrictSUIDSGID=true \
+    --property='Delegate=cpu memory pids' \
+    --property=ProtectControlGroups=private \
     --property=LockPersonality=true \
     --property='RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6' \
     "$sessiond" \
@@ -59,4 +86,4 @@ if ! grep -Fq 'compositor-renderer=' <<<"$probe_output" \
     exit 1
 fi
 
-echo "sessiond-hardening=ok private-tmp=yes gpu=ready"
+echo "sessiond-hardening=ok private-tmp=yes cgroup=private-delegated gpu=ready"

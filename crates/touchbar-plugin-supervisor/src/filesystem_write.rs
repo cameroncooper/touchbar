@@ -2425,7 +2425,7 @@ mod tests {
     }
 
     #[test]
-    fn replaced_mount_identity_cannot_redirect_a_write() {
+    fn replaced_logical_mount_receives_write_and_old_object_does_not() {
         let parent = tempdir().unwrap();
         let root = parent.path().join("root");
         let old_root = parent.path().join("old-root");
@@ -2446,11 +2446,14 @@ mod tests {
         fs::rename(&root, &old_root).unwrap();
         fs::create_dir(&root).unwrap();
 
-        assert_eq!(
+        assert!(matches!(
             backend.execute(&request, &token()),
-            BrokerResult::Error(BrokerErrorCode::OutOfScope)
+            BrokerResult::Success { .. }
+        ));
+        assert_eq!(
+            fs::read(root.join("created")).unwrap(),
+            b"must stay contained"
         );
-        assert!(!root.join("created").exists());
         assert!(!old_root.join("created").exists());
     }
 
@@ -3095,7 +3098,8 @@ mod tests {
         }
 
         // Replacing the grant's pathname likewise cannot redirect an upload
-        // opened against the original device/inode-bound root.
+        // that already acquired its descriptors. A later operation will
+        // resolve the logical grant path again.
         for round in 0..ROUNDS {
             let begin = request(
                 &root,

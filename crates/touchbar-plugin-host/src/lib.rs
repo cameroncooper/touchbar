@@ -57,6 +57,15 @@ pub mod bindings {
     });
 }
 
+pub mod appearance_provider_bindings {
+    wasmtime::component::bindgen!({
+        path: "../../wit",
+        world: "appearance-provider",
+    });
+}
+
+use appearance_provider_bindings::AppearanceProvider;
+use appearance_provider_bindings::touchbar::plugin::broker as provider_broker;
 use bindings::Plugin;
 use bindings::touchbar::plugin::broker as wit_broker;
 use bindings::touchbar::plugin::ui as wit;
@@ -227,6 +236,78 @@ impl wit_broker::Host for HostState {
             .close(resource_id)
             .map(|_| ())
             .map_err(|_| wit_broker::ErrorCode::Internal)
+    }
+}
+
+impl provider_broker::Host for HostState {
+    fn capabilities(&mut self) -> provider_broker::CapabilitySnapshot {
+        let Some(broker) = self.broker.as_ref() else {
+            return provider_broker::CapabilitySnapshot {
+                generation: 0,
+                states: Vec::new(),
+            };
+        };
+        provider_broker::CapabilitySnapshot {
+            generation: broker.generation(),
+            states: broker
+                .states()
+                .iter()
+                .map(to_provider_capability_state)
+                .collect(),
+        }
+    }
+
+    fn request(
+        &mut self,
+        capability: String,
+        operation: String,
+        payload: Vec<u8>,
+    ) -> std::result::Result<u64, provider_broker::ErrorCode> {
+        let phase = self.phase.ok_or(provider_broker::ErrorCode::InvalidPhase)?;
+        if matches!(phase, CallbackPhase::Items | CallbackPhase::Render) {
+            return Err(provider_broker::ErrorCode::InvalidPhase);
+        }
+        self.broker
+            .as_mut()
+            .ok_or(provider_broker::ErrorCode::Unavailable)?
+            .submit(
+                phase,
+                capability,
+                operation,
+                payload,
+                self.activation.clone(),
+            )
+            .map_err(|_| provider_broker::ErrorCode::Internal)
+    }
+
+    fn cancel(&mut self, request_id: u64) -> std::result::Result<(), provider_broker::ErrorCode> {
+        if !matches!(
+            self.phase,
+            Some(CallbackPhase::Input | CallbackPhase::HostEvent)
+        ) {
+            return Err(provider_broker::ErrorCode::InvalidPhase);
+        }
+        self.broker
+            .as_mut()
+            .ok_or(provider_broker::ErrorCode::Unavailable)?
+            .cancel(request_id)
+            .map(|_| ())
+            .map_err(|_| provider_broker::ErrorCode::Internal)
+    }
+
+    fn close(&mut self, resource_id: u64) -> std::result::Result<(), provider_broker::ErrorCode> {
+        if !matches!(
+            self.phase,
+            Some(CallbackPhase::Input | CallbackPhase::HostEvent)
+        ) {
+            return Err(provider_broker::ErrorCode::InvalidPhase);
+        }
+        self.broker
+            .as_mut()
+            .ok_or(provider_broker::ErrorCode::Unavailable)?
+            .close(resource_id)
+            .map(|_| ())
+            .map_err(|_| provider_broker::ErrorCode::Internal)
     }
 }
 
@@ -638,6 +719,98 @@ pub struct PluginHost {
     effects: EffectRegistry,
     guest_render_calls: u64,
     assets: PackageAssets,
+}
+
+pub struct AppearanceProviderHost {
+    store: Store<HostState>,
+    bindings: AppearanceProvider,
+    limits: HostLimits,
+}
+
+impl AppearanceProviderHost {
+    pub fn from_bytes_with_broker(
+        bytes: &[u8],
+        limits: HostLimits,
+        broker: BrokerClient,
+    ) -> Result<Self> {
+        let (engine, mut store) = create_store(limits, Some(broker))?;
+        let component = Component::new(&engine, bytes).context("compile appearance provider")?;
+        let linker = create_appearance_provider_linker(&engine)?;
+        let bindings = AppearanceProvider::instantiate(&mut store, &component, &linker)
+            .context("instantiate appearance provider without ambient capabilities")?;
+        Ok(Self {
+            store,
+            bindings,
+            limits,
+        })
+    }
+
+    pub fn start(&mut self, provider_id: &str) -> Result<()> {
+        self.refuel()?;
+        self.store.data_mut().phase = Some(CallbackPhase::HostEvent);
+        let result = self
+            .bindings
+            .call_start(&mut self.store, provider_id)
+            .context("appearance provider start call failed");
+        self.store.data_mut().phase = None;
+        result?.map_err(|message| anyhow!("appearance provider rejected start: {message}"))
+    }
+
+    pub fn tick(&mut self) -> Result<()> {
+        self.refuel()?;
+        self.store.data_mut().phase = Some(CallbackPhase::HostEvent);
+        let result = self
+            .bindings
+            .call_tick(&mut self.store)
+            .context("appearance provider tick call failed");
+        self.store.data_mut().phase = None;
+        result?.map_err(|message| anyhow!("appearance provider rejected tick: {message}"))
+    }
+
+    pub fn broker_event_fd(&self) -> RawFd {
+        self.store
+            .data()
+            .broker
+            .as_ref()
+            .expect("appearance provider always has a broker")
+            .channel
+            .as_raw_fd()
+    }
+
+    pub fn dispatch_broker_events(&mut self) -> Result<()> {
+        for _ in 0..64 {
+            let event = {
+                let broker = self
+                    .store
+                    .data_mut()
+                    .broker
+                    .as_mut()
+                    .expect("appearance provider always has a broker");
+                broker.try_receive_event()?
+            };
+            let Some(event) = event else {
+                break;
+            };
+            self.refuel()?;
+            self.store.data_mut().phase = Some(CallbackPhase::HostEvent);
+            let event = to_provider_broker_event(event);
+            let result = self
+                .bindings
+                .call_handle_host_event(&mut self.store, &event)
+                .context("appearance provider host-event call failed");
+            self.store.data_mut().phase = None;
+            result?
+                .map_err(|message| anyhow!("appearance provider rejected host event: {message}"))?;
+        }
+        Ok(())
+    }
+
+    fn refuel(&mut self) -> Result<()> {
+        Ok(self
+            .store
+            .set_fuel(self.limits.fuel_per_call)
+            .context("reset appearance provider instruction budget")?)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1363,6 +1536,88 @@ fn create_linker(engine: &Engine) -> Result<Linker<HostState>> {
     wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
         .context("link capability-free WASI runtime plumbing")?;
     Ok(linker)
+}
+
+fn create_appearance_provider_linker(engine: &Engine) -> Result<Linker<HostState>> {
+    let mut linker = Linker::new(engine);
+    AppearanceProvider::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)
+        .context("link appearance provider broker imports")?;
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker)
+        .context("link capability-free WASI runtime plumbing")?;
+    Ok(linker)
+}
+
+fn to_provider_capability_state(state: &CapabilityState) -> provider_broker::CapabilityState {
+    provider_broker::CapabilityState {
+        capability: state.capability.clone(),
+        required: state.required,
+        status: match state.status {
+            WireCapabilityStatus::Granted => provider_broker::CapabilityStatus::Granted,
+            WireCapabilityStatus::Denied => provider_broker::CapabilityStatus::Denied,
+            WireCapabilityStatus::NeedsConsent => provider_broker::CapabilityStatus::NeedsConsent,
+            WireCapabilityStatus::Unsupported => provider_broker::CapabilityStatus::Unsupported,
+            WireCapabilityStatus::DisclosureOnly => {
+                provider_broker::CapabilityStatus::DisclosureOnly
+            }
+        },
+    }
+}
+
+fn to_provider_error(error: BrokerErrorCode) -> provider_broker::ErrorCode {
+    match error {
+        BrokerErrorCode::Unavailable => provider_broker::ErrorCode::Unavailable,
+        BrokerErrorCode::Denied => provider_broker::ErrorCode::Denied,
+        BrokerErrorCode::OutOfScope => provider_broker::ErrorCode::OutOfScope,
+        BrokerErrorCode::InvalidRequest => provider_broker::ErrorCode::InvalidRequest,
+        BrokerErrorCode::InvalidPhase => provider_broker::ErrorCode::InvalidPhase,
+        BrokerErrorCode::ActivationRequired => provider_broker::ErrorCode::ActivationRequired,
+        BrokerErrorCode::QuotaExceeded => provider_broker::ErrorCode::QuotaExceeded,
+        BrokerErrorCode::RateLimited => provider_broker::ErrorCode::RateLimited,
+        BrokerErrorCode::Timeout => provider_broker::ErrorCode::Timeout,
+        BrokerErrorCode::Cancelled => provider_broker::ErrorCode::Cancelled,
+        BrokerErrorCode::Unsupported => provider_broker::ErrorCode::Unsupported,
+        BrokerErrorCode::BackendFailed => provider_broker::ErrorCode::BackendFailed,
+        BrokerErrorCode::Internal => provider_broker::ErrorCode::Internal,
+    }
+}
+
+fn to_provider_result(result: BrokerResult) -> provider_broker::OperationResult {
+    match result {
+        BrokerResult::Success { payload } => provider_broker::OperationResult::Success(payload),
+        BrokerResult::Error(error) => {
+            provider_broker::OperationResult::Error(to_provider_error(error))
+        }
+    }
+}
+
+fn to_provider_broker_event(event: BrokerEvent) -> provider_broker::HostEvent {
+    match event {
+        BrokerEvent::Completion { request_id, result } => {
+            provider_broker::HostEvent::Completion((request_id, to_provider_result(result)))
+        }
+        BrokerEvent::ResourceEvent {
+            resource_id,
+            sequence,
+            result,
+        } => provider_broker::HostEvent::ResourceEvent((
+            resource_id,
+            sequence,
+            to_provider_result(result),
+        )),
+        BrokerEvent::CapabilityChanged { generation, state } => {
+            provider_broker::HostEvent::CapabilityChanged((
+                generation,
+                to_provider_capability_state(&state),
+            ))
+        }
+        BrokerEvent::Overflow {
+            generation,
+            dropped_events,
+        } => provider_broker::HostEvent::Overflow((generation, dropped_events)),
+        BrokerEvent::Shutdown { generation, reason } => {
+            provider_broker::HostEvent::Shutdown((generation, to_provider_error(reason)))
+        }
+    }
 }
 
 fn to_wit_capability_state(state: &CapabilityState) -> wit_broker::CapabilityState {

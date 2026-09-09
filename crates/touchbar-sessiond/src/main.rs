@@ -626,7 +626,7 @@ impl State {
         live_profiles: Option<LiveProfiles>,
         user_profile_document: Option<ProfileDocument>,
         profile_path: Option<PathBuf>,
-        appearance_provider: Option<appearance::ProviderSource>,
+        appearance_provider: Option<appearance::ProviderIdentity>,
         system_bar: bool,
     ) -> Result<Self> {
         let appearance_source = AppearanceSource::discover(appearance_provider);
@@ -789,9 +789,22 @@ impl State {
 
     fn set_appearance_provider(
         &mut self,
-        provider: Option<appearance::ProviderSource>,
+        provider: Option<appearance::ProviderIdentity>,
     ) -> Result<bool> {
         let Some(snapshot) = self.appearance_source.set_provider(provider) else {
+            return Ok(false);
+        };
+        self.apply_appearance(snapshot, true)
+    }
+
+    fn publish_appearance_provider(
+        &mut self,
+        publication: plugins::ProviderPublication,
+    ) -> Result<bool> {
+        let Some(snapshot) = self
+            .appearance_source
+            .publish_provider(&publication.identity, &publication.publication)
+        else {
             return Ok(false);
         };
         self.apply_appearance(snapshot, true)
@@ -4478,7 +4491,9 @@ fn main() -> Result<()> {
             }
         }
         if let Some(manager) = &mut plugin_manager {
-            manager.poll();
+            for publication in manager.poll() {
+                state.publish_appearance_provider(publication)?;
+            }
         }
         while let Some(stream) = listener.accept().context("accept Wayland client")? {
             let tracker = Arc::new(ClientTracker::default());
@@ -4678,6 +4693,9 @@ fn main() -> Result<()> {
         }
         if let Some(watcher) = &profile_watcher {
             wait_fds.push(watcher.notification_fd());
+        }
+        if let Some(manager) = &plugin_manager {
+            wait_fds.extend(manager.appearance_notification_fds());
         }
         wait_for_work(wait_fds, wait_delay).context("wait for session work")?;
     }

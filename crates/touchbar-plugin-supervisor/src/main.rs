@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env,
     ffi::CString,
     fs,
@@ -21,16 +21,17 @@ use touchbar_package::{
     encode_asset_bundle,
 };
 use touchbar_plugin_supervisor::{
-    AuditFile, AuditFileLimits, ClipboardBackend, CommandRunBackend, ComponentCgroup,
-    ConnectionExit, ConnectionIdentity, ConnectionLimits, ContextReadBackend, DbusCallBackend,
-    DbusSubscriptionBackend, FilesystemReadBackend, FilesystemWriteBackend, GrantStoreWatcher,
-    HttpRequestBackend, LocalIpcBackend, NotificationBackend, SecretReadBackend,
+    AppearanceProviderBackend, AuditFile, AuditFileLimits, ClipboardBackend, CommandRunBackend,
+    ComponentCgroup, ConnectionExit, ConnectionIdentity, ConnectionLimits, ContextReadBackend,
+    DbusCallBackend, DbusSubscriptionBackend, FilesystemReadBackend, FilesystemWriteBackend,
+    GrantStoreWatcher, HttpRequestBackend, LocalIpcBackend, NotificationBackend, SecretReadBackend,
     SupervisorConnection, UriOpenBackend, WaylandClipboard, ZbusDesktopPortal, ZbusSecretService,
     ZbusTransport, component_task_limit,
 };
 use touchbar_policy::{
-    CapabilityRegistry, CapabilityRequest, EffectivePolicy, GrantStore, PackageInstance,
-    Provenance, RuntimeKind, SessionGrants, calculate_effective_policy,
+    CapabilityId, CapabilityRegistry, CapabilityRequest, CapabilityScope, EffectivePolicy,
+    GrantStore, PackageInstance, Provenance, RuntimeKind, SessionGrants,
+    calculate_effective_policy,
 };
 use touchbar_protocol::broker_ipc::{Seqpacket, TransportError};
 
@@ -38,13 +39,15 @@ const BROKER_FD: i32 = 3;
 const COMPONENT_FD: i32 = 4;
 const MANIFEST_FD: i32 = 5;
 const ASSET_BUNDLE_FD: i32 = 6;
+const APPEARANCE_SINK_FD: i32 = 7;
 const BROKER_FD_ENV: &str = "TOUCHBAR_BROKER_FD";
 const COMPONENT_FD_ENV: &str = "TOUCHBAR_COMPONENT_FD";
 const MANIFEST_FD_ENV: &str = "TOUCHBAR_MANIFEST_FD";
 const ASSET_BUNDLE_FD_ENV: &str = "TOUCHBAR_ASSET_BUNDLE_FD";
+const APPEARANCE_SINK_FD_ENV: &str = "TOUCHBAR_APPEARANCE_SINK_FD";
 const MAX_COMPONENT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
-const USAGE: &str = "usage: touchbar-plugin-supervisor PACKAGE --host HOST --source github:OWNER/REPO --version VERSION --digest sha256:HEX [--asset-digest ID=sha256:HEX]... --provenance verified-release|unverified-release|local-development --state DIRECTORY [--grants FILE] [--session-grants FILE] [--audit FILE] [-- HOST_ARGUMENTS...]";
+const USAGE: &str = "usage: touchbar-plugin-supervisor PACKAGE --host HOST --source github:OWNER/REPO --version VERSION --digest sha256:HEX [--package-digest sha256:HEX] [--appearance-provider ID] [--asset-digest ID=sha256:HEX]... --provenance verified-release|unverified-release|local-development --state DIRECTORY [--grants FILE] [--session-grants FILE] [--audit FILE] [-- HOST_ARGUMENTS...]";
 
 struct Arguments {
     package: PathBuf,
@@ -52,6 +55,8 @@ struct Arguments {
     source: GithubSource,
     version: Version,
     digest: String,
+    package_digest: Option<String>,
+    appearance_provider: Option<String>,
     asset_digests: Vec<String>,
     provenance: Provenance,
     state: PathBuf,
@@ -64,6 +69,36 @@ struct Arguments {
 enum SessionOutcome {
     HostExited(u8),
     PolicyBlocked,
+}
+
+struct VisualBackends {
+    filesystem_write: Arc<FilesystemWriteBackend>,
+    notification: Arc<NotificationBackend<ZbusDesktopPortal>>,
+    local_ipc: Arc<LocalIpcBackend>,
+    clipboard: Arc<ClipboardBackend<WaylandClipboard>>,
+}
+
+impl VisualBackends {
+    fn new(state: &Path, source: &str) -> Result<Self> {
+        Ok(Self {
+            filesystem_write: Arc::new(
+                FilesystemWriteBackend::new(state, source)
+                    .context("open persistent filesystem write quota state")?,
+            ),
+            notification: Arc::new(
+                NotificationBackend::new(ZbusDesktopPortal::new(), state, source)
+                    .context("open persistent notification rate state")?,
+            ),
+            local_ipc: Arc::new(
+                LocalIpcBackend::new(state, source)
+                    .context("open persistent local IPC quota state")?,
+            ),
+            clipboard: Arc::new(
+                ClipboardBackend::new(WaylandClipboard::new(), state, source)
+                    .context("open persistent clipboard rate state")?,
+            ),
+        })
+    }
 }
 
 fn main() -> ExitCode {
@@ -83,6 +118,9 @@ fn run() -> Result<u8> {
     harden_supervisor_process()?;
     let arguments = parse_arguments()?;
     validate_digest(&arguments.digest)?;
+    if let Some(digest) = &arguments.package_digest {
+        validate_digest(digest)?;
+    }
     let root = arguments
         .package
         .canonicalize()
@@ -98,55 +136,79 @@ fn run() -> Result<u8> {
     if manifest.plugin.source != arguments.source || manifest.plugin.version != arguments.version {
         bail!("package manifest identity does not match the installer-owned source and version");
     }
-    let entrypoint = match &manifest.runtime {
-        RuntimeSpec::Component { entrypoint, .. } => entrypoint,
-        RuntimeSpec::Native { .. } => {
-            bail!("the component supervisor cannot launch a native package")
+    let entrypoint = match &arguments.appearance_provider {
+        Some(provider_id) => {
+            &manifest
+                .appearance_providers
+                .iter()
+                .find(|provider| provider.id == *provider_id)
+                .with_context(|| {
+                    format!("manifest does not declare appearance provider {provider_id}")
+                })?
+                .entrypoint
         }
+        None => match &manifest.runtime {
+            RuntimeSpec::Component { entrypoint, .. } => entrypoint,
+            RuntimeSpec::Native { .. } => {
+                bail!("the component supervisor cannot launch a native package")
+            }
+        },
     };
     let component_source = open_beneath(root_descriptor.as_raw_fd(), Path::new(entrypoint))?;
     let component_artifact = seal_verified_component(component_source, &arguments.digest)?;
     let manifest_artifact = seal_bytes("touchbar-manifest", &manifest_bytes)?;
-    let asset_artifact = seal_verified_assets(
-        root_descriptor.as_raw_fd(),
-        &manifest,
-        &arguments.asset_digests,
-    )?;
+    let asset_artifact = arguments
+        .appearance_provider
+        .is_none()
+        .then(|| {
+            seal_verified_assets(
+                root_descriptor.as_raw_fd(),
+                &manifest,
+                &arguments.asset_digests,
+            )
+        })
+        .transpose()?
+        .flatten();
     let registry = CapabilityRegistry::default();
-    let requests = registry
+    let mut requests = registry
         .normalize(&manifest)
         .map_err(|errors| anyhow::anyhow!(format_policy_errors(&errors)))?;
+    project_requests_for_worker(
+        &mut requests,
+        &manifest,
+        arguments.appearance_provider.as_deref(),
+    )?;
     let package = PackageInstance {
         source: arguments.source.clone(),
         version: arguments.version.clone(),
-        digest: arguments.digest.clone(),
+        digest: arguments
+            .package_digest
+            .clone()
+            .unwrap_or_else(|| arguments.digest.clone()),
         provenance: arguments.provenance,
         runtime: RuntimeKind::Component,
     };
-    let filesystem_write_backend = Arc::new(
-        FilesystemWriteBackend::new(&arguments.state, &package.source.to_string())
-            .context("open persistent filesystem write quota state")?,
-    );
-    let notification_backend = Arc::new(
-        NotificationBackend::new(
-            ZbusDesktopPortal::new(),
-            &arguments.state,
-            &package.source.to_string(),
-        )
-        .context("open persistent notification rate state")?,
-    );
-    let local_ipc_backend = Arc::new(
-        LocalIpcBackend::new(&arguments.state, &package.source.to_string())
-            .context("open persistent local IPC quota state")?,
-    );
-    let clipboard_backend = Arc::new(
-        ClipboardBackend::new(
-            WaylandClipboard::new(),
-            &arguments.state,
-            &package.source.to_string(),
-        )
-        .context("open persistent clipboard rate state")?,
-    );
+    let (visual_backends, appearance_backend) = match &arguments.appearance_provider {
+        Some(provider) => (
+            None,
+            Some(Arc::new(AppearanceProviderBackend::new(
+                provider,
+                appearance_sink_from_environment()?,
+            ))),
+        ),
+        None => {
+            if env::var_os(APPEARANCE_SINK_FD_ENV).is_some() {
+                bail!("appearance sink was supplied for a visual component");
+            }
+            (
+                Some(VisualBackends::new(
+                    &arguments.state,
+                    &package.source.to_string(),
+                )?),
+                None,
+            )
+        }
+    };
     let audit_file = arguments
         .audit
         .as_ref()
@@ -177,10 +239,8 @@ fn run() -> Result<u8> {
             &component_artifact,
             &manifest_artifact,
             asset_artifact.as_ref(),
-            &filesystem_write_backend,
-            &notification_backend,
-            &local_ipc_backend,
-            &clipboard_backend,
+            visual_backends.as_ref(),
+            appearance_backend.as_ref(),
         )? {
             SessionOutcome::HostExited(code) => Ok(code),
             SessionOutcome::PolicyBlocked => {
@@ -232,10 +292,8 @@ fn run() -> Result<u8> {
             &component_artifact,
             &manifest_artifact,
             asset_artifact.as_ref(),
-            &filesystem_write_backend,
-            &notification_backend,
-            &local_ipc_backend,
-            &clipboard_backend,
+            visual_backends.as_ref(),
+            appearance_backend.as_ref(),
         )? {
             SessionOutcome::HostExited(code) => return Ok(code),
             SessionOutcome::PolicyBlocked => {
@@ -245,6 +303,38 @@ fn run() -> Result<u8> {
             }
         }
     }
+}
+
+/// Each component world is a separate least-authority principal. Visual
+/// workers never inherit provider authority, and an appearance worker sees
+/// only its own provider ID and declared logical mounts.
+fn project_requests_for_worker(
+    requests: &mut Vec<CapabilityRequest>,
+    manifest: &PluginManifest,
+    appearance_provider: Option<&str>,
+) -> Result<()> {
+    let Some(provider_id) = appearance_provider else {
+        requests.retain(|request| request.capability != CapabilityId::AppearanceProvideV1);
+        return Ok(());
+    };
+    let provider = manifest
+        .appearance_providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .with_context(|| format!("manifest does not declare appearance provider {provider_id}"))?;
+    let mounts = provider.mounts.iter().collect::<BTreeSet<_>>();
+    requests.retain_mut(|request| {
+        let CapabilityScope::AppearanceProvide(scope) = &mut request.scope else {
+            return false;
+        };
+        scope.providers.retain(|id| id == provider_id);
+        scope.mounts.retain(|mount| mounts.contains(&mount.label));
+        true
+    });
+    if requests.len() != 1 {
+        bail!("appearance provider has no projected appearance.provide.v1 request");
+    }
+    Ok(())
 }
 
 fn harden_supervisor_process() -> Result<()> {
@@ -280,10 +370,8 @@ fn run_session(
     component_artifact: &OwnedFd,
     manifest_artifact: &OwnedFd,
     asset_artifact: Option<&OwnedFd>,
-    filesystem_write_backend: &Arc<FilesystemWriteBackend>,
-    notification_backend: &Arc<NotificationBackend<ZbusDesktopPortal>>,
-    local_ipc_backend: &Arc<LocalIpcBackend>,
-    clipboard_backend: &Arc<ClipboardBackend<WaylandClipboard>>,
+    visual_backends: Option<&VisualBackends>,
+    appearance_backend: Option<&Arc<AppearanceProviderBackend>>,
 ) -> Result<SessionOutcome> {
     let (host_channel, supervisor_channel) = Seqpacket::pair()?;
     let identity = ConnectionIdentity {
@@ -330,12 +418,16 @@ fn run_session(
     let mut command = Command::new(&arguments.host);
     command
         .arg(root)
-        .args(&arguments.host_arguments)
         .env_clear()
         .env(BROKER_FD_ENV, BROKER_FD.to_string())
         .env(COMPONENT_FD_ENV, COMPONENT_FD.to_string())
         .env(MANIFEST_FD_ENV, MANIFEST_FD.to_string())
         .env("MESA_SHADER_CACHE_DISABLE", "true");
+    if let Some(provider) = &arguments.appearance_provider {
+        command.args(["--appearance-provider-worker", provider]);
+    } else {
+        command.args(&arguments.host_arguments);
+    }
     if asset_source.is_some() {
         command.env(ASSET_BUNDLE_FD_ENV, ASSET_BUNDLE_FD.to_string());
     }
@@ -427,79 +519,57 @@ fn run_session(
     if let Some(audit_file) = audit_file {
         connection.set_audit_file(audit_file.clone());
     }
-    connection.register_backend(
-        touchbar_policy::CapabilityId::DbusCallV1,
-        Arc::new(DbusCallBackend::new(ZbusTransport::new())),
-    );
-    let context_backend = Arc::new(ContextReadBackend::with_hyprland_source());
-    connection.register_backend(
-        touchbar_policy::CapabilityId::ContextReadV1,
-        context_backend.clone(),
-    );
-    connection.register_resource_backend(
-        touchbar_policy::CapabilityId::ContextReadV1,
-        context_backend,
-    );
-    let filesystem_backend = Arc::new(FilesystemReadBackend::new());
-    connection.register_backend(
-        touchbar_policy::CapabilityId::FilesystemReadV1,
-        filesystem_backend.clone(),
-    );
-    connection.register_resource_backend(
-        touchbar_policy::CapabilityId::FilesystemReadV1,
-        filesystem_backend,
-    );
-    connection.register_backend(
-        touchbar_policy::CapabilityId::FilesystemWriteV1,
-        filesystem_write_backend.clone(),
-    );
-    connection.register_resource_backend(
-        touchbar_policy::CapabilityId::FilesystemWriteV1,
-        filesystem_write_backend.clone(),
-    );
-    let http_backend = Arc::new(HttpRequestBackend::new());
-    connection.register_backend(
-        touchbar_policy::CapabilityId::HttpRequestV1,
-        http_backend.clone(),
-    );
-    connection
-        .register_resource_backend(touchbar_policy::CapabilityId::HttpRequestV1, http_backend);
-    connection.register_resource_backend(
-        touchbar_policy::CapabilityId::DbusSubscribeV1,
-        Arc::new(DbusSubscriptionBackend::new(ZbusTransport::new())),
-    );
-    connection.register_resource_backend(
-        touchbar_policy::CapabilityId::CommandRunV1,
-        Arc::new(CommandRunBackend::new(root.to_owned())),
-    );
-    connection.register_backend(
-        touchbar_policy::CapabilityId::UriOpenV1,
-        Arc::new(UriOpenBackend::new(ZbusDesktopPortal::new())),
-    );
-    connection.register_backend(
-        touchbar_policy::CapabilityId::NotificationSendV1,
-        notification_backend.clone(),
-    );
-    connection.register_backend(
-        touchbar_policy::CapabilityId::SecretReadV1,
-        Arc::new(SecretReadBackend::new(ZbusSecretService::new())),
-    );
-    connection.register_backend(
-        touchbar_policy::CapabilityId::LocalConnectV1,
-        local_ipc_backend.clone(),
-    );
-    connection.register_resource_backend(
-        touchbar_policy::CapabilityId::LocalConnectV1,
-        local_ipc_backend.clone(),
-    );
-    connection.register_backend(
-        touchbar_policy::CapabilityId::ClipboardReadV1,
-        clipboard_backend.clone(),
-    );
-    connection.register_backend(
-        touchbar_policy::CapabilityId::ClipboardWriteV1,
-        clipboard_backend.clone(),
-    );
+    if let Some(backend) = appearance_backend {
+        connection.register_backend(CapabilityId::AppearanceProvideV1, backend.clone());
+    } else {
+        let visual = visual_backends.context("visual worker backends are unavailable")?;
+        connection.register_backend(
+            CapabilityId::DbusCallV1,
+            Arc::new(DbusCallBackend::new(ZbusTransport::new())),
+        );
+        let context_backend = Arc::new(ContextReadBackend::with_hyprland_source());
+        connection.register_backend(CapabilityId::ContextReadV1, context_backend.clone());
+        connection.register_resource_backend(CapabilityId::ContextReadV1, context_backend);
+        let filesystem_backend = Arc::new(FilesystemReadBackend::new());
+        connection.register_backend(CapabilityId::FilesystemReadV1, filesystem_backend.clone());
+        connection.register_resource_backend(CapabilityId::FilesystemReadV1, filesystem_backend);
+        connection.register_backend(
+            CapabilityId::FilesystemWriteV1,
+            visual.filesystem_write.clone(),
+        );
+        connection.register_resource_backend(
+            CapabilityId::FilesystemWriteV1,
+            visual.filesystem_write.clone(),
+        );
+        let http_backend = Arc::new(HttpRequestBackend::new());
+        connection.register_backend(CapabilityId::HttpRequestV1, http_backend.clone());
+        connection.register_resource_backend(CapabilityId::HttpRequestV1, http_backend);
+        connection.register_resource_backend(
+            CapabilityId::DbusSubscribeV1,
+            Arc::new(DbusSubscriptionBackend::new(ZbusTransport::new())),
+        );
+        connection.register_resource_backend(
+            CapabilityId::CommandRunV1,
+            Arc::new(CommandRunBackend::new(root.to_owned())),
+        );
+        connection.register_backend(
+            CapabilityId::UriOpenV1,
+            Arc::new(UriOpenBackend::new(ZbusDesktopPortal::new())),
+        );
+        connection.register_backend(
+            CapabilityId::NotificationSendV1,
+            visual.notification.clone(),
+        );
+        connection.register_backend(
+            CapabilityId::SecretReadV1,
+            Arc::new(SecretReadBackend::new(ZbusSecretService::new())),
+        );
+        connection.register_backend(CapabilityId::LocalConnectV1, visual.local_ipc.clone());
+        connection
+            .register_resource_backend(CapabilityId::LocalConnectV1, visual.local_ipc.clone());
+        connection.register_backend(CapabilityId::ClipboardReadV1, visual.clipboard.clone());
+        connection.register_backend(CapabilityId::ClipboardWriteV1, visual.clipboard.clone());
+    }
     let exit = match watcher {
         Some((watcher, grants_path, session_grants_path)) => {
             let update_fd = watcher.as_raw_fd();
@@ -592,6 +662,8 @@ fn parse_arguments() -> Result<Arguments> {
     let mut source = None;
     let mut version = None;
     let mut digest = None;
+    let mut package_digest = None;
+    let mut appearance_provider = None;
     let mut asset_digests = Vec::new();
     let mut provenance = None;
     let mut state = None;
@@ -625,6 +697,13 @@ fn parse_arguments() -> Result<Arguments> {
                 )
             }
             "--digest" => digest = Some(values.next().context("--digest requires VALUE")?),
+            "--package-digest" => {
+                package_digest = Some(values.next().context("--package-digest requires VALUE")?)
+            }
+            "--appearance-provider" => {
+                appearance_provider =
+                    Some(values.next().context("--appearance-provider requires ID")?)
+            }
             "--asset-digest" => asset_digests.push(
                 values
                     .next()
@@ -683,6 +762,8 @@ fn parse_arguments() -> Result<Arguments> {
         source: source.context("--source is required")?,
         version: version.context("--version is required")?,
         digest: digest.context("--digest is required")?,
+        package_digest,
+        appearance_provider,
         asset_digests,
         provenance: provenance.context("--provenance is required")?,
         state: state.context("--state is required")?,
@@ -691,6 +772,22 @@ fn parse_arguments() -> Result<Arguments> {
         audit,
         host_arguments,
     })
+}
+
+fn appearance_sink_from_environment() -> Result<Seqpacket> {
+    let value = env::var_os(APPEARANCE_SINK_FD_ENV)
+        .context("appearance provider requires an inherited publication channel")?;
+    let descriptor = value
+        .to_str()
+        .context("appearance sink descriptor is not UTF-8")?
+        .parse::<i32>()
+        .context("appearance sink descriptor is not an integer")?;
+    if descriptor != APPEARANCE_SINK_FD {
+        bail!("appearance sink descriptor is not in its fixed inherited slot");
+    }
+    // SAFETY: sessiond transfers ownership of this fixed inherited descriptor.
+    let descriptor = unsafe { OwnedFd::from_raw_fd(descriptor) };
+    Seqpacket::try_from_owned_fd(descriptor).context("validate appearance publication channel")
 }
 
 #[repr(C)]
@@ -915,4 +1012,84 @@ fn format_policy_errors(errors: &[touchbar_policy::NormalizationError]) -> Strin
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn worker_manifest() -> PluginManifest {
+        PluginManifest::from_toml(
+            r#"manifest_version = 1
+[plugin]
+name = "Workers"
+version = "1.0.0"
+description = "Worker projection fixture"
+license = "MIT"
+source = "github:alice/workers"
+api = "^1.0"
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+[[items]]
+id = "main"
+label = "Main"
+[[appearance-provider]]
+id = "first"
+label = "First"
+entrypoint = "component/first.wasm"
+world = "touchbar:plugin/appearance-provider@1.0.0"
+desktop_sessions = ["example"]
+mounts = ["first-state"]
+[[appearance-provider]]
+id = "second"
+label = "Second"
+entrypoint = "component/second.wasm"
+world = "touchbar:plugin/appearance-provider@1.0.0"
+desktop_sessions = ["example"]
+mounts = ["second-state"]
+[[permission]]
+capability = "appearance.provide.v1"
+required = true
+reason = "Publish appearance"
+[permission.scope]
+providers = ["first", "second"]
+maximum_file_bytes = 4096
+maximum_updates_per_second = 2
+[[permission.scope.mounts]]
+label = "first-state"
+[[permission.scope.mounts]]
+label = "second-state"
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn component_worlds_receive_disjoint_role_authority() {
+        let manifest = worker_manifest();
+        let registry = CapabilityRegistry::default();
+        let all = registry.normalize(&manifest).unwrap();
+
+        let mut visual = all.clone();
+        project_requests_for_worker(&mut visual, &manifest, None).unwrap();
+        assert!(visual.is_empty());
+
+        let mut provider = all;
+        project_requests_for_worker(&mut provider, &manifest, Some("first")).unwrap();
+        assert_eq!(provider.len(), 1);
+        let CapabilityScope::AppearanceProvide(scope) = &provider[0].scope else {
+            panic!("wrong projected capability")
+        };
+        assert_eq!(scope.providers, BTreeSet::from(["first".into()]));
+        assert_eq!(
+            scope
+                .mounts
+                .iter()
+                .map(|mount| mount.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first-state"]
+        );
+    }
 }

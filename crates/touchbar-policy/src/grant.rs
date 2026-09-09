@@ -74,15 +74,30 @@ pub enum ClipboardBinding {
     WaylandDataControl { socket: PathBuf },
 }
 
-/// One installer-selected directory, bound to the exact filesystem object
-/// observed when consent was recorded. The supervisor resolves `path` without
-/// following symlinks and requires this device/inode pair on every use.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StandardDirectoryBinding {
+    Home,
+    XdgConfig,
+    XdgData,
+    XdgState,
+    XdgCache,
+    XdgRuntime,
+}
+
+/// Installer-owned filesystem authority. A direct path follows the user's
+/// chosen logical location across legitimate replacement. A standard
+/// directory is re-resolved from trusted host session state on every launch.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FilesystemMountBinding {
-    pub path: PathBuf,
-    pub device: u64,
-    pub inode: u64,
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum FilesystemMountBinding {
+    Path {
+        path: PathBuf,
+    },
+    StandardDirectory {
+        directory: StandardDirectoryBinding,
+        relative: PathBuf,
+    },
 }
 
 impl FilesystemMountBinding {
@@ -126,10 +141,28 @@ impl FilesystemMountBinding {
                 "filesystem mount binding is not a directory",
             ));
         }
-        Ok(Self {
-            path,
-            device: metadata.st_dev,
-            inode: metadata.st_ino,
+        Ok(Self::Path { path })
+    }
+
+    pub fn standard_directory(
+        directory: StandardDirectoryBinding,
+        relative: impl Into<PathBuf>,
+    ) -> io::Result<Self> {
+        let relative = relative.into();
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+            || relative.as_os_str().as_encoded_bytes().contains(&0)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "standard directory suffix is not normalized and relative",
+            ));
+        }
+        Ok(Self::StandardDirectory {
+            directory,
+            relative,
         })
     }
 }
@@ -244,10 +277,25 @@ impl GrantRecord {
             );
         }
         for binding in self.bindings.filesystem_mounts.values() {
-            if !normalized_absolute_path(&binding.path)
-                || binding.path.as_os_str().as_encoded_bytes().contains(&0)
-            {
-                return Err("filesystem grant roots must be normalized absolute paths".into());
+            match binding {
+                FilesystemMountBinding::Path { path }
+                    if !normalized_absolute_path(path)
+                        || path.as_os_str().as_encoded_bytes().contains(&0) =>
+                {
+                    return Err("filesystem grant roots must be normalized absolute paths".into());
+                }
+                FilesystemMountBinding::StandardDirectory { relative, .. }
+                    if relative.is_absolute()
+                        || relative
+                            .components()
+                            .any(|component| !matches!(component, Component::Normal(_)))
+                        || relative.as_os_str().as_encoded_bytes().contains(&0) =>
+                {
+                    return Err(
+                        "standard directory suffixes must be normalized and relative".into(),
+                    );
+                }
+                _ => {}
             }
         }
 

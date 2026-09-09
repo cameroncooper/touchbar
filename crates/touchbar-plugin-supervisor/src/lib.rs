@@ -5,6 +5,7 @@
 //! and resource backends; every unregistered capability remains unavailable.
 
 mod activation;
+mod appearance;
 mod audit;
 mod clipboard;
 mod command;
@@ -43,6 +44,9 @@ use touchbar_protocol::broker_ipc::{
 };
 
 pub use activation::{ActivationExpectation, ActivationLedger};
+pub use appearance::{
+    APPEARANCE_PUBLISH_OPERATION, APPEARANCE_READ_FILE_OPERATION, AppearanceProviderBackend,
+};
 pub use audit::{
     AuditActivation, AuditDecision, AuditFile, AuditFileError, AuditFileLimits, AuditInput,
     AuditLog, AuditRecord, AuditResult,
@@ -121,7 +125,6 @@ pub enum ConnectionExit {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConnectionLimits {
-    pub maximum_seen_request_ids: usize,
     pub maximum_audit_records: usize,
     pub maximum_consumed_activations: usize,
     pub maximum_activation_lifetime: Duration,
@@ -136,7 +139,6 @@ pub struct ConnectionLimits {
 impl Default for ConnectionLimits {
     fn default() -> Self {
         Self {
-            maximum_seen_request_ids: 4096,
             maximum_audit_records: 1024,
             maximum_consumed_activations: 4096,
             maximum_activation_lifetime: DEFAULT_ACTIVATION_LIFETIME,
@@ -168,7 +170,6 @@ pub struct SupervisorConnection {
     generation: u64,
     limits: ConnectionLimits,
     last_request_id: u64,
-    seen_request_ids: usize,
     runtime: AsyncBrokerRuntime,
     activations: ActivationLedger,
     audit: AuditLog,
@@ -231,7 +232,6 @@ impl SupervisorConnection {
             generation: 1,
             limits,
             last_request_id: 0,
-            seen_request_ids: 0,
             runtime,
             activations: ActivationLedger::new(limits.maximum_consumed_activations),
             audit,
@@ -442,10 +442,7 @@ impl SupervisorConnection {
 
     fn handle_request(&mut self, request: HostMessage) -> Result<(), TransportError> {
         let request_id = request.request_id();
-        if request_id == 0
-            || request_id <= self.last_request_id
-            || self.seen_request_ids >= self.limits.maximum_seen_request_ids
-        {
+        if request_id == 0 || request_id <= self.last_request_id {
             self.health
                 .record(HealthEvent::ProtocolViolation, self.elapsed_millis());
             self.channel.send_supervisor(&SupervisorMessage::Response {
@@ -455,7 +452,6 @@ impl SupervisorConnection {
             return Ok(());
         }
         self.last_request_id = request_id;
-        self.seen_request_ids += 1;
 
         let response = match request {
             HostMessage::GetCapabilities { request_id } => Some(SupervisorMessage::Capabilities {
@@ -1898,6 +1894,24 @@ mod tests {
                 result: BrokerResult::Error(BrokerErrorCode::InvalidRequest),
             }
         );
+    }
+
+    #[test]
+    fn monotonically_increasing_request_ids_do_not_expire() {
+        let (host, mut supervisor, _) = connection(false);
+
+        for request_id in 1..=5_000 {
+            host.send_host(&HostMessage::GetCapabilities { request_id })
+                .unwrap();
+            supervisor.serve_one().unwrap();
+            assert!(matches!(
+                host.recv_supervisor().unwrap(),
+                SupervisorMessage::Capabilities {
+                    request_id: response_id,
+                    ..
+                } if response_id == request_id
+            ));
+        }
     }
 
     #[test]

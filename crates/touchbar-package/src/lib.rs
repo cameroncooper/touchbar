@@ -25,6 +25,7 @@ pub const MANIFEST_FILE_NAME: &str = "touchbar-plugin.toml";
 pub const SUPPORTED_MANIFEST_VERSION: u32 = 1;
 pub const SUPPORTED_HOST_API_VERSION: &str = "1.0.0";
 pub const SUPPORTED_COMPONENT_WORLD: &str = "touchbar:plugin/plugin@1.0.0";
+pub const SUPPORTED_APPEARANCE_PROVIDER_WORLD: &str = "touchbar:plugin/appearance-provider@1.0.0";
 pub const MAX_ASSETS: usize = 64;
 /// Largest width a manifest may declare, shared with the profile and replay
 /// parsers so a wider panel never needs a manifest contract change.
@@ -198,17 +199,70 @@ impl PluginManifest {
                 ),
             ));
         }
+        if !self.appearance_providers.is_empty()
+            && !matches!(self.runtime, RuntimeSpec::Component { .. })
+        {
+            issues.push(ValidationIssue::new(
+                "appearance-provider",
+                "appearance providers require a component package runtime",
+            ));
+        }
         let mut provider_ids = BTreeSet::new();
+        let mut provider_paths = BTreeSet::new();
         for (index, provider) in self.appearance_providers.iter().enumerate() {
             let prefix = format!("appearance-provider[{index}]");
             validate_kebab_id(&mut issues, &format!("{prefix}.id"), &provider.id);
             validate_nonempty(&mut issues, &format!("{prefix}.label"), &provider.label);
-            validate_kebab_id(&mut issues, &format!("{prefix}.mount"), &provider.mount);
-            validate_relative_path(&mut issues, &format!("{prefix}.path"), &provider.path);
+            validate_package_path(
+                &mut issues,
+                &format!("{prefix}.entrypoint"),
+                &provider.entrypoint,
+            );
+            if Path::new(&provider.entrypoint)
+                .extension()
+                .and_then(|value| value.to_str())
+                != Some("wasm")
+            {
+                issues.push(ValidationIssue::new(
+                    format!("{prefix}.entrypoint"),
+                    "an appearance provider entrypoint must have a .wasm extension",
+                ));
+            }
+            if provider.world != SUPPORTED_APPEARANCE_PROVIDER_WORLD {
+                issues.push(ValidationIssue::new(
+                    format!("{prefix}.world"),
+                    format!(
+                        "unsupported appearance provider world {}; this host supports {}",
+                        provider.world, SUPPORTED_APPEARANCE_PROVIDER_WORLD
+                    ),
+                ));
+            }
+            if let Some(build_package) = &provider.build_package {
+                validate_nonempty(
+                    &mut issues,
+                    &format!("{prefix}.build_package"),
+                    build_package,
+                );
+                if !build_package
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+                {
+                    issues.push(ValidationIssue::new(
+                        format!("{prefix}.build_package"),
+                        "must contain only ASCII letters, digits, '-' or '_'",
+                    ));
+                }
+            }
             if !provider_ids.insert(&provider.id) {
                 issues.push(ValidationIssue::new(
                     format!("{prefix}.id"),
                     "duplicate appearance provider id",
+                ));
+            }
+            if !provider_paths.insert(&provider.entrypoint) {
+                issues.push(ValidationIssue::new(
+                    format!("{prefix}.entrypoint"),
+                    "duplicate appearance provider entrypoint",
                 ));
             }
             if provider.desktop_sessions.is_empty() {
@@ -222,16 +276,23 @@ impl PluginManifest {
                 &format!("{prefix}.desktop_sessions"),
                 &provider.desktop_sessions,
             );
-            for (field, key) in provider.fields.entries() {
-                if key.is_empty()
-                    || key.len() > MAX_LOCAL_ID_BYTES
-                    || !key
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-                {
+            if provider.mounts.is_empty() || provider.mounts.len() > 32 {
+                issues.push(ValidationIssue::new(
+                    format!("{prefix}.mounts"),
+                    "must contain 1..=32 appearance permission mount labels",
+                ));
+            }
+            let mut mounts = BTreeSet::new();
+            for (mount_index, mount) in provider.mounts.iter().enumerate() {
+                validate_kebab_id(
+                    &mut issues,
+                    &format!("{prefix}.mounts[{mount_index}]"),
+                    mount,
+                );
+                if !mounts.insert(mount) {
                     issues.push(ValidationIssue::new(
-                        format!("{prefix}.fields.{field}"),
-                        "must be a non-empty flat TOML key containing only ASCII letters, digits, '-' or '_'",
+                        format!("{prefix}.mounts[{mount_index}]"),
+                        "duplicate appearance provider mount label",
                     ));
                 }
             }
@@ -482,6 +543,7 @@ impl PluginManifest {
         };
         ArtifactPaths {
             runtime,
+            providers: self.appearance_providers.iter(),
             assets: self.assets.iter(),
         }
     }
@@ -513,6 +575,7 @@ impl<'a> Iterator for RuntimeArtifactPaths<'a> {
 
 pub struct ArtifactPaths<'a> {
     runtime: RuntimeArtifactPaths<'a>,
+    providers: std::slice::Iter<'a, AppearanceProvider>,
     assets: std::slice::Iter<'a, AssetDefinition>,
 }
 
@@ -522,6 +585,11 @@ impl<'a> Iterator for ArtifactPaths<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         self.runtime
             .next()
+            .or_else(|| {
+                self.providers
+                    .next()
+                    .map(|provider| provider.entrypoint.as_str())
+            })
             .or_else(|| self.assets.next().map(|asset| asset.path.as_str()))
     }
 }
@@ -681,61 +749,22 @@ pub struct AutomaticProfile {
     pub enabled_by_default: bool,
 }
 
-/// A package-owned source of semantic Touch Bar colors.
+/// A package-owned sandboxed worker which publishes semantic Touch Bar colors.
 ///
-/// The session daemon, rather than plugin code, reads this bounded file through
-/// an installer-owned filesystem mount binding. `appearance.provide.v1`
-/// separately controls whether the resulting palette may become global.
+/// The worker receives no ambient filesystem access. Its
+/// `appearance.provide.v1` grant supplies purpose-specific logical mounts for
+/// bounded reads and authorizes publication under this exact provider ID.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppearanceProvider {
     pub id: String,
     pub label: String,
-    pub mount: String,
-    pub path: String,
+    pub entrypoint: String,
+    pub world: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_package: Option<String>,
     pub desktop_sessions: Vec<String>,
-    #[serde(default)]
-    pub fields: AppearanceProviderFields,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct AppearanceProviderFields {
-    pub scheme: String,
-    pub background: String,
-    pub foreground: String,
-    pub accent: String,
-    pub selection: String,
-    pub muted: String,
-    pub destructive: String,
-}
-
-impl Default for AppearanceProviderFields {
-    fn default() -> Self {
-        Self {
-            scheme: "mode".into(),
-            background: "background".into(),
-            foreground: "foreground".into(),
-            accent: "accent".into(),
-            selection: "selection".into(),
-            muted: "muted".into(),
-            destructive: "red".into(),
-        }
-    }
-}
-
-impl AppearanceProviderFields {
-    fn entries(&self) -> [(&'static str, &str); 7] {
-        [
-            ("scheme", &self.scheme),
-            ("background", &self.background),
-            ("foreground", &self.foreground),
-            ("accent", &self.accent),
-            ("selection", &self.selection),
-            ("muted", &self.muted),
-            ("destructive", &self.destructive),
-        ]
-    }
+    pub mounts: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -1297,21 +1326,6 @@ fn validate_package_path(issues: &mut Vec<ValidationIssue>, field: &str, value: 
     }
 }
 
-fn validate_relative_path(issues: &mut Vec<ValidationIssue>, field: &str, value: &str) {
-    let path = Path::new(value);
-    let valid = !value.is_empty()
-        && !value.contains('\\')
-        && path
-            .components()
-            .all(|component| matches!(component, Component::Normal(_)));
-    if !valid {
-        issues.push(ValidationIssue::new(
-            field,
-            "must be a normalized relative path contained within the granted mount",
-        ));
-    }
-}
-
 fn validate_world(issues: &mut Vec<ValidationIssue>, world: &str) {
     if world != SUPPORTED_COMPONENT_WORLD {
         issues.push(ValidationIssue::new(
@@ -1792,32 +1806,34 @@ maximum_width = 80
     }
 
     #[test]
-    fn appearance_provider_is_bounded_and_defaults_to_canonical_palette_keys() {
+    fn appearance_provider_declares_a_separate_supported_component_world() {
         let source = format!(
             r#"{COMPONENT}
 
 [[appearance-provider]]
 id = "desktop-theme"
 label = "Desktop theme"
-mount = "desktop-state"
-path = "current/theme/colors.toml"
+entrypoint = "component/appearance-provider.wasm"
+world = "{SUPPORTED_APPEARANCE_PROVIDER_WORLD}"
+build_package = "desktop-theme-provider"
 desktop_sessions = ["example-desktop"]
+mounts = ["desktop-state"]
 "#
         );
         let manifest = PluginManifest::from_toml(&source).unwrap();
         let provider = &manifest.appearance_providers[0];
-        assert_eq!(provider.fields, AppearanceProviderFields::default());
-        assert_eq!(provider.path, "current/theme/colors.toml");
+        assert_eq!(provider.entrypoint, "component/appearance-provider.wasm");
+        assert_eq!(provider.world, SUPPORTED_APPEARANCE_PROVIDER_WORLD);
 
         let invalid = source.replace(
-            "path = \"current/theme/colors.toml\"",
-            "path = \"../private.toml\"",
+            "entrypoint = \"component/appearance-provider.wasm\"",
+            "entrypoint = \"../private.wasm\"",
         );
         assert!(
             PluginManifest::from_toml(&invalid)
                 .unwrap_err()
                 .to_string()
-                .contains("granted mount")
+                .contains("contained within the package")
         );
     }
 

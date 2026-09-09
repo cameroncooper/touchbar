@@ -4,6 +4,7 @@ members = [
     "crates/touchbar-client",
     "crates/touchbar-catalog",
     "crates/touchbar-component-sdk",
+    "crates/touchbar-appearance-provider-sdk",
     "crates/touchbar-layout",
     "crates/touchbar-model",
     "crates/touchbar-package",
@@ -33,6 +34,7 @@ members = [
     "plugins/capture",
     "plugins/command-deck",
     "plugins/omarchy",
+    "plugins/omarchy/provider",
     "crates/touchbar-media-demo",
     "crates/touchbard",
 ]

@@ -120,6 +120,10 @@ rather than installing them:
 
 The [pack catalog](catalog) is open for submissions and currently empty.
 `touchbarctl plugin search` will stay quiet until packs are published to it.
+Once a pack is listed, the normal user flow is simply
+`touchbarctl plugin install plugin-name`: the host shows resolved permissions,
+then installs, grants, and enables it after one confirmation. Canonical GitHub
+sources and local `--path` packages use the same flow without a catalog entry.
 
 ## How it works
 

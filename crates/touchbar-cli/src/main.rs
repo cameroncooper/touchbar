@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
-    io::{self, Write},
+    io::{self, BufRead, IsTerminal, Write},
     os::unix::{
         fs::{FileTypeExt, MetadataExt, OpenOptionsExt},
         process::CommandExt,
@@ -23,13 +23,14 @@ use touchbar_package::{
     PresentationGroupElement, REFERENCE_TOUCHBAR_WIDTH, RuntimeSpec,
 };
 use touchbar_plugin_store::{
-    InstalledOrigin, InstalledRuntime, PluginStore, ReleaseInstall, StorePaths, inspect_package,
-    pack_directory,
+    InstalledOrigin, InstalledRuntime, PackagePreview, PluginStore, ReleaseInstall, StorePaths,
+    inspect_package, pack_directory,
 };
 use touchbar_policy::{
-    CapabilityId, CapabilityRegistry, ClipboardBinding, Decision, FilesystemMountBinding,
-    GrantBindings, GrantRecord, GrantStore, LocalEndpointBinding, PackageInstance,
-    PermissionChangeKind, Provenance, ReusePolicy, RuntimeKind, SecretBinding, SessionGrants,
+    CapabilityId, CapabilityRegistry, CapabilityRequest, CapabilityScope, ClipboardBinding,
+    CommandArgument, Decision, FilesystemMountBinding, GrantBindings, GrantRecord, GrantStore,
+    LocalEndpointBinding, PackageInstance, PermissionChangeKind, Provenance, ReusePolicy,
+    RuntimeKind, SecretBinding, SessionGrants, StandardDirectoryBinding,
     calculate_effective_policy,
 };
 use url::Url;
@@ -63,6 +64,9 @@ const USAGE: &str = r#"usage: touchbarctl plugin COMMAND [OPTIONS]
   pack [--package DIR] [--output FILE]
   release-check --tag TAG [--repository OWNER/REPO] [--package DIR]
   publish --tag TAG --repository OWNER/REPO [--package DIR]
+  install (--path PACKAGE_OR_ARCHIVE | SOURCE_OR_ALIAS [--version VERSION])
+          [--bind LABEL=DIR] [--endpoint LABEL=SOCKET]
+          [--secret NAME=OBJECT_PATH] [--clipboard-socket SOCKET] [--yes]
   add (--path PACKAGE_OR_ARCHIVE | SOURCE_OR_ALIAS [--version VERSION])
   update SOURCE [--version VERSION]
   rollback SOURCE [--version VERSION]
@@ -122,6 +126,7 @@ fn run() -> Result<()> {
         "pack" => pack(values),
         "release-check" => release_check(values),
         "publish" => publish(values),
+        "install" => install(values),
         "add" => add(values),
         "update" => update(values),
         "rollback" => rollback(values),
@@ -224,6 +229,7 @@ fn build(args: &[String]) -> Result<()> {
 fn build_component(root: &Path) -> Result<()> {
     let cargo_path = root.join("Cargo.toml");
     let toolchain = ComponentToolchain::resolve(root)?;
+    let manifest = read_manifest(root)?;
     let status = toolchain
         .cargo_command()
         .args([
@@ -239,7 +245,6 @@ fn build_component(root: &Path) -> Result<()> {
     if !status.success() {
         bail!("component build failed")
     }
-    let manifest = read_manifest(&root)?;
     let RuntimeSpec::Component { entrypoint, .. } = &manifest.runtime else {
         bail!("native plugins own their build process")
     };
@@ -277,6 +282,45 @@ fn build_component(root: &Path) -> Result<()> {
     fs::create_dir_all(target.parent().context("invalid component entrypoint")?)?;
     fs::copy(&built, &target)
         .with_context(|| format!("copy {} to {}", built.display(), target.display()))?;
+    let mut built_provider_packages = BTreeSet::new();
+    for provider in &manifest.appearance_providers {
+        let package = provider.build_package.as_deref().with_context(|| {
+            format!(
+                "appearance provider {} requires build_package for `plugin build`",
+                provider.id
+            )
+        })?;
+        if built_provider_packages.insert(package.to_owned()) {
+            let status = toolchain
+                .cargo_command()
+                .args([
+                    "build",
+                    "--release",
+                    "--target",
+                    "wasm32-wasip2",
+                    "--manifest-path",
+                ])
+                .arg(&cargo_path)
+                .args(["--package", package])
+                .status()
+                .with_context(|| format!("build appearance provider package {package}"))?;
+            if !status.success() {
+                bail!("appearance provider build failed for package {package}")
+            }
+        }
+        let built = Path::new(target_directory)
+            .join("wasm32-wasip2/release")
+            .join(format!("{}.wasm", package.replace('-', "_")));
+        let target = root.join(&provider.entrypoint);
+        fs::create_dir_all(
+            target
+                .parent()
+                .context("invalid appearance provider entrypoint")?,
+        )?;
+        fs::copy(&built, &target)
+            .with_context(|| format!("copy {} to {}", built.display(), target.display()))?;
+        println!("Built {}", target.display());
+    }
     let package = inspect_package(&root)?;
     println!("Built {}\n{}", target.display(), package.package_digest);
     Ok(())
@@ -398,7 +442,7 @@ fn context(args: &[String]) -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&json!({
                 "manifest_version": 1, "host_api": touchbar_package::SUPPORTED_HOST_API_VERSION, "component_world": touchbar_package::SUPPORTED_COMPONENT_WORLD,
-                "commands": ["new", "build", "context", "check", "test", "replay", "dev", "run", "pack", "release-check", "publish", "add", "update", "rollback", "search", "catalog-check", "submit", "list", "inspect", "permissions", "permission", "enable", "disable", "item", "profile", "remove"],
+                "commands": ["new", "build", "context", "check", "test", "replay", "dev", "run", "pack", "release-check", "publish", "install", "add", "update", "rollback", "search", "catalog-check", "submit", "list", "inspect", "permissions", "permission", "enable", "disable", "item", "profile", "remove"],
                 "principles": ["stable item ids", "responsive rendering through 2008 pixels", "package-local automatic profiles", "permission-scoped appearance providers", "package-local presentation bars", "presentation width matrices", "theme roles", "sealed logical assets", "semantic image tint", "stable animation ids", "host-timed animations", "bounded validated GPU effects", "brokered capabilities", "scope-checked offline broker fixtures", "headless tests"]
             }))?
         ),
@@ -1518,6 +1562,842 @@ fn submit(args: &[String]) -> Result<()> {
     eprintln!(
         "Submit this entry in a pull request to {CATALOG_REPOSITORY}/blob/main/catalog/plugins.toml; catalog review does not replace release provenance verification."
     );
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct InstallEnvironment {
+    home: Option<PathBuf>,
+    config: Option<PathBuf>,
+    data: Option<PathBuf>,
+    state: Option<PathBuf>,
+    cache: Option<PathBuf>,
+    runtime: Option<PathBuf>,
+    system_data: Vec<PathBuf>,
+    wayland_display: Option<String>,
+}
+
+impl InstallEnvironment {
+    fn discover() -> Self {
+        let home = env::var_os("HOME").map(PathBuf::from);
+        Self {
+            config: env::var_os("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .or_else(|| home.as_ref().map(|path| path.join(".config"))),
+            data: env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .or_else(|| home.as_ref().map(|path| path.join(".local/share"))),
+            state: env::var_os("XDG_STATE_HOME")
+                .map(PathBuf::from)
+                .or_else(|| home.as_ref().map(|path| path.join(".local/state"))),
+            cache: env::var_os("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .or_else(|| home.as_ref().map(|path| path.join(".cache"))),
+            runtime: env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from),
+            system_data: env::var_os("XDG_DATA_DIRS")
+                .map(|value| env::split_paths(&value).collect())
+                .unwrap_or_else(|| {
+                    vec![
+                        PathBuf::from("/usr/local/share"),
+                        PathBuf::from("/usr/share"),
+                    ]
+                }),
+            wayland_display: env::var("WAYLAND_DISPLAY").ok(),
+            home,
+        }
+    }
+
+    fn directory_hint(&self, hint: &str) -> Option<PathBuf> {
+        let prefixed = [
+            ("xdg-config:", self.config.as_deref()),
+            ("xdg-data:", self.data.as_deref()),
+            ("xdg-state:", self.state.as_deref()),
+            ("xdg-cache:", self.cache.as_deref()),
+            ("xdg-runtime:", self.runtime.as_deref()),
+            ("home:", self.home.as_deref()),
+        ];
+        for (prefix, base) in prefixed {
+            if let Some(relative) = hint.strip_prefix(prefix) {
+                return base.and_then(|base| join_normalized_relative_or_root(base, relative));
+            }
+        }
+        if let Some(relative) = hint.strip_prefix("system-data:") {
+            return self
+                .system_data
+                .iter()
+                .filter_map(|base| join_normalized_relative(base, relative))
+                .find(|path| path.is_dir());
+        }
+        // These legacy display hints are common in existing manifests. Treat
+        // only the fixed XDG user-directory names as resolvable defaults.
+        if matches!(
+            hint,
+            "Desktop"
+                | "Documents"
+                | "Downloads"
+                | "Music"
+                | "Pictures"
+                | "Public"
+                | "Templates"
+                | "Videos"
+        ) {
+            return self.home.as_ref().map(|home| home.join(hint));
+        }
+        None
+    }
+
+    fn filesystem_binding(&self, hint: &str) -> Option<FilesystemMountBinding> {
+        let standards = [
+            ("xdg-config:", StandardDirectoryBinding::XdgConfig),
+            ("xdg-data:", StandardDirectoryBinding::XdgData),
+            ("xdg-state:", StandardDirectoryBinding::XdgState),
+            ("xdg-cache:", StandardDirectoryBinding::XdgCache),
+            ("xdg-runtime:", StandardDirectoryBinding::XdgRuntime),
+            ("home:", StandardDirectoryBinding::Home),
+        ];
+        for (prefix, directory) in standards {
+            if let Some(relative) = hint.strip_prefix(prefix) {
+                let relative = PathBuf::from(relative);
+                let resolved = self.directory_hint(hint)?;
+                // Defaults are offered only when the selected resource exists
+                // now; the stored authority remains symbolic across sessions.
+                FilesystemMountBinding::from_directory(resolved).ok()?;
+                return FilesystemMountBinding::standard_directory(directory, relative).ok();
+            }
+        }
+        self.directory_hint(hint)
+            .and_then(|path| FilesystemMountBinding::from_directory(path).ok())
+    }
+
+    fn endpoint_hint(&self, hint: &str) -> Option<PathBuf> {
+        let relative = hint
+            .strip_prefix("xdg-runtime:")
+            .or_else(|| hint.strip_prefix("$XDG_RUNTIME_DIR/"))?;
+        self.runtime
+            .as_deref()
+            .and_then(|base| join_normalized_relative(base, relative))
+    }
+
+    fn clipboard_socket(&self) -> Option<PathBuf> {
+        let display = self.wayland_display.as_deref()?;
+        self.runtime
+            .as_deref()
+            .and_then(|base| join_normalized_relative(base, display))
+    }
+}
+
+fn join_normalized_relative(base: &Path, relative: &str) -> Option<PathBuf> {
+    let relative = Path::new(relative);
+    (!relative.as_os_str().is_empty()
+        && !relative.is_absolute()
+        && !relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_))))
+    .then(|| base.join(relative))
+}
+
+fn join_normalized_relative_or_root(base: &Path, relative: &str) -> Option<PathBuf> {
+    if relative.is_empty() {
+        Some(base.to_owned())
+    } else {
+        join_normalized_relative(base, relative)
+    }
+}
+
+#[derive(Default)]
+struct UsedInstallBindings {
+    filesystem: BTreeSet<String>,
+    endpoints: BTreeSet<String>,
+    secrets: BTreeSet<String>,
+    clipboard: bool,
+}
+
+impl UsedInstallBindings {
+    fn merge(&mut self, other: Self) {
+        self.filesystem.extend(other.filesystem);
+        self.endpoints.extend(other.endpoints);
+        self.secrets.extend(other.secrets);
+        self.clipboard |= other.clipboard;
+    }
+}
+
+struct PermissionReview {
+    capability: CapabilityId,
+    reason: String,
+    resources: Vec<String>,
+    reused: bool,
+}
+
+struct SkippedPermission {
+    capability: CapabilityId,
+    reason: String,
+    missing: Vec<String>,
+}
+
+struct InstallPlan {
+    origin: InstalledOrigin,
+    grants: Vec<GrantRecord>,
+    permissions: Vec<PermissionReview>,
+    skipped: Vec<SkippedPermission>,
+    native: bool,
+}
+
+enum BindingResolution {
+    Complete(GrantBindings, UsedInstallBindings),
+    Missing(Vec<String>),
+}
+
+fn install(args: &[String]) -> Result<()> {
+    reject_with_flags(
+        args,
+        &[
+            "--path",
+            "--version",
+            "--bind",
+            "--endpoint",
+            "--secret",
+            "--clipboard-socket",
+        ],
+        &["--yes"],
+        1,
+    )?;
+    let path = opt(args, "--path");
+    let remote = positional_with_flags(args, 0, &["--yes"]);
+    if path.is_some() == remote.is_some() {
+        bail!("install requires exactly one --path PACKAGE_OR_ARCHIVE or SOURCE_OR_ALIAS");
+    }
+    if path.is_some() && opt(args, "--version").is_some() {
+        bail!("--version is only valid for a GitHub release install");
+    }
+    let supplied = grant_bindings(args)?;
+    let environment = InstallEnvironment::discover();
+    let paths = StorePaths::discover()?;
+    let mut store = PluginStore::open(paths.clone())?;
+
+    if let Some(path) = path {
+        let path = Path::new(path);
+        let preview = if path.is_dir() {
+            inspect_package(path)?.preview()
+        } else {
+            store.preview_archive(path)?
+        };
+        let existing = store.get(&preview.manifest.plugin.source).cloned();
+        let unchanged = existing
+            .as_ref()
+            .filter(|installed| {
+                installed.version == preview.manifest.plugin.version
+                    && installed.package_digest == preview.package_digest
+            })
+            .cloned();
+        let origin = unchanged
+            .as_ref()
+            .map(|installed| installed.origin.clone())
+            .unwrap_or(InstalledOrigin::LocalDevelopment);
+        let plan = plan_install(&preview, &origin, &paths, &supplied, &environment)?;
+        if unchanged
+            .as_ref()
+            .is_some_and(|installed| installed.enabled && plan.grants.is_empty())
+        {
+            print_already_installed(&preview);
+            return Ok(());
+        }
+        if !review_install(&preview, &plan, has_flag(args, "--yes"))? {
+            println!("Installation cancelled.");
+            return Ok(());
+        }
+        let installed = if let Some(installed) = unchanged {
+            installed
+        } else if path.is_dir() {
+            store.install_directory(path)?
+        } else {
+            store.install_archive(path)?
+        };
+        finish_install(&mut store, &paths, &preview, installed, plan)?;
+        return Ok(());
+    }
+
+    let requested_source = remote.expect("validated remote source");
+    let (source, catalog_entry) = install_source(requested_source)?;
+    let requested = opt(args, "--version")
+        .map(str::parse::<Version>)
+        .transpose()
+        .context("--version must be a semantic version")?;
+    if let Some(installed) = store.get(&source).cloned() {
+        if requested
+            .as_ref()
+            .is_some_and(|version| *version != installed.version)
+        {
+            bail!(
+                "plugin {source} is already installed at {}; use `plugin update {source} --version {}`",
+                installed.version,
+                requested.expect("different requested version")
+            );
+        }
+        let preview = inspect_package(&store.package_path(&installed)?)?.preview();
+        let plan = plan_install(&preview, &installed.origin, &paths, &supplied, &environment)?;
+        if installed.enabled && plan.grants.is_empty() {
+            print_already_installed(&preview);
+            return Ok(());
+        }
+        if !review_install(&preview, &plan, has_flag(args, "--yes"))? {
+            println!("Installation cancelled.");
+            return Ok(());
+        }
+        finish_install(&mut store, &paths, &preview, installed, plan)?;
+        return Ok(());
+    }
+    let client = github::GithubClient::new()?;
+    let release = client.resolve(&source, requested.as_ref())?;
+    let archive = client.download(&release, &store.paths().root)?;
+    let attested = client.verify_attestation_if_present(&release, archive.path())?;
+    let preview = store.preview_archive(archive.path())?;
+    if preview.manifest.plugin.source != source
+        || preview.manifest.plugin.version != release.version
+    {
+        bail!("release package identity does not match the requested source and version");
+    }
+    let origin = release.installed_origin(attested);
+    if let Some(entry) = &catalog_entry {
+        println!("{} ({})", entry.name, entry.tier);
+    }
+    let plan = plan_install(&preview, &origin, &paths, &supplied, &environment)?;
+    if !review_install(&preview, &plan, has_flag(args, "--yes"))? {
+        println!("Installation cancelled.");
+        return Ok(());
+    }
+    let outcome =
+        store.install_release_archive(archive.path(), &source, &release.version, origin)?;
+    finish_install(&mut store, &paths, &preview, outcome.installed, plan)?;
+    if !release.immutable {
+        eprintln!(
+            "WARNING: this GitHub release is mutable; permissions are tied to this exact package digest"
+        );
+    }
+    Ok(())
+}
+
+fn print_already_installed(package: &PackagePreview) {
+    println!(
+        "{} {} is already installed and enabled.",
+        package.manifest.plugin.name, package.manifest.plugin.version
+    );
+}
+
+fn plan_install(
+    package: &PackagePreview,
+    origin: &InstalledOrigin,
+    paths: &StorePaths,
+    supplied: &GrantBindings,
+    environment: &InstallEnvironment,
+) -> Result<InstallPlan> {
+    let runtime = match package.manifest.runtime {
+        RuntimeSpec::Component { .. } => RuntimeKind::Component,
+        RuntimeSpec::Native { .. } => RuntimeKind::Native,
+    };
+    let native = runtime == RuntimeKind::Native;
+    let existing = GrantStore::load(&paths.grants)?;
+    let instance = PackageInstance {
+        source: package.manifest.plugin.source.clone(),
+        version: package.manifest.plugin.version.clone(),
+        digest: package.package_digest.clone(),
+        provenance: origin.provenance(),
+        runtime,
+    };
+    let effective = calculate_effective_policy(
+        &instance,
+        &package.requests,
+        &existing,
+        &SessionGrants::default(),
+        &CapabilityRegistry::v1(),
+    );
+    let reuse = if instance.provenance == Provenance::VerifiedRelease {
+        ReusePolicy::VerifiedSameSource
+    } else {
+        ReusePolicy::ExactDigest
+    };
+    let mut grants = Vec::new();
+    let mut permissions = Vec::new();
+    let mut skipped = Vec::new();
+    let mut used = UsedInstallBindings::default();
+
+    if native {
+        validate_unused_install_bindings(supplied, &used)?;
+        permissions.extend(package.requests.iter().map(|request| PermissionReview {
+            capability: request.capability.clone(),
+            reason: request.reason.clone(),
+            resources: Vec::new(),
+            reused: false,
+        }));
+        return Ok(InstallPlan {
+            origin: origin.clone(),
+            grants,
+            permissions,
+            skipped,
+            native,
+        });
+    }
+
+    for request in &package.requests {
+        if !CapabilityRegistry::v1().supports(&request.capability) {
+            if request.required {
+                bail!(
+                    "this host does not support required permission {}",
+                    request.capability
+                );
+            }
+            skipped.push(SkippedPermission {
+                capability: request.capability.clone(),
+                reason: request.reason.clone(),
+                missing: vec!["not supported by this host".into()],
+            });
+            continue;
+        }
+        let existing_bindings = effective
+            .grants
+            .iter()
+            .find(|grant| grant.request.capability == request.capability && grant.allows())
+            .map(|grant| &grant.bindings);
+        let (bindings, request_used) =
+            match resolve_install_bindings(request, supplied, existing_bindings, environment)? {
+                BindingResolution::Complete(bindings, used) => (bindings, used),
+                BindingResolution::Missing(missing) if request.required => {
+                    bail!(
+                        "{} needs {}; the plugin did not provide a usable default",
+                        request.reason,
+                        missing.join(", ")
+                    )
+                }
+                BindingResolution::Missing(missing) => {
+                    skipped.push(SkippedPermission {
+                        capability: request.capability.clone(),
+                        reason: request.reason.clone(),
+                        missing,
+                    });
+                    continue;
+                }
+            };
+        used.merge(request_used);
+        let reused = effective.grants.iter().any(|grant| {
+            grant.request.capability == request.capability
+                && grant.allows()
+                && grant.bindings == bindings
+        });
+        permissions.push(PermissionReview {
+            capability: request.capability.clone(),
+            reason: request.reason.clone(),
+            resources: binding_resources(&bindings),
+            reused,
+        });
+        if !reused {
+            let record = GrantRecord {
+                source: instance.source.clone(),
+                capability: request.capability.clone(),
+                approved_scope: request.scope.clone(),
+                bindings,
+                decision: Decision::Allow,
+                reuse,
+                approved_version: instance.version.clone(),
+                approved_digest: instance.digest.clone(),
+            };
+            record.validate().map_err(anyhow::Error::msg)?;
+            grants.push(record);
+        }
+    }
+    validate_unused_install_bindings(supplied, &used)?;
+    Ok(InstallPlan {
+        origin: origin.clone(),
+        grants,
+        permissions,
+        skipped,
+        native,
+    })
+}
+
+fn resolve_install_bindings(
+    request: &CapabilityRequest,
+    supplied: &GrantBindings,
+    existing: Option<&GrantBindings>,
+    environment: &InstallEnvironment,
+) -> Result<BindingResolution> {
+    let mut bindings = GrantBindings::default();
+    let mut used = UsedInstallBindings::default();
+    let mut missing = Vec::new();
+    for (label, hint) in requested_filesystem_mounts(request) {
+        let binding = supplied
+            .filesystem_mounts
+            .get(&label)
+            .cloned()
+            .or_else(|| {
+                existing
+                    .and_then(|bindings| bindings.filesystem_mounts.get(&label))
+                    .cloned()
+            })
+            .or_else(|| {
+                hint.as_deref()
+                    .and_then(|hint| environment.filesystem_binding(hint))
+            });
+        if let Some(binding) = binding {
+            if supplied.filesystem_mounts.contains_key(&label) {
+                used.filesystem.insert(label.clone());
+            }
+            bindings.filesystem_mounts.insert(label, binding);
+        } else {
+            missing.push(format!(
+                "a directory for `{label}` (override with --bind {label}=DIR)"
+            ));
+        }
+    }
+    if let CapabilityScope::SecretRead(scope) = &request.scope {
+        for name in &scope.logical_names {
+            let binding = supplied.secrets.get(name).cloned().or_else(|| {
+                existing
+                    .and_then(|bindings| bindings.secrets.get(name))
+                    .cloned()
+            });
+            if let Some(binding) = binding {
+                bindings.secrets.insert(name.clone(), binding);
+                if supplied.secrets.contains_key(name) {
+                    used.secrets.insert(name.clone());
+                }
+            } else {
+                missing.push(format!(
+                    "a secret for `{name}` (override with --secret {name}=OBJECT_PATH)"
+                ));
+            }
+        }
+    }
+    if let CapabilityScope::LocalConnect(scope) = &request.scope {
+        for endpoint in &scope.endpoints {
+            let binding = supplied
+                .local_endpoints
+                .get(&endpoint.label)
+                .cloned()
+                .or_else(|| {
+                    existing
+                        .and_then(|bindings| bindings.local_endpoints.get(&endpoint.label))
+                        .cloned()
+                })
+                .or_else(|| {
+                    endpoint
+                        .suggested_endpoint
+                        .as_deref()
+                        .and_then(|hint| environment.endpoint_hint(hint))
+                        .and_then(|path| {
+                            validated_user_socket(path.to_str()?)
+                                .ok()
+                                .map(|path| LocalEndpointBinding::UnixStream { path })
+                        })
+                });
+            if let Some(binding) = binding {
+                if supplied.local_endpoints.contains_key(&endpoint.label) {
+                    used.endpoints.insert(endpoint.label.clone());
+                }
+                bindings
+                    .local_endpoints
+                    .insert(endpoint.label.clone(), binding);
+            } else {
+                missing.push(format!(
+                    "a socket for `{}` (override with --endpoint {}=SOCKET)",
+                    endpoint.label, endpoint.label
+                ));
+            }
+        }
+    }
+    if matches!(
+        request.capability,
+        CapabilityId::ClipboardReadV1 | CapabilityId::ClipboardWriteV1
+    ) {
+        let clipboard = supplied
+            .clipboard
+            .clone()
+            .or_else(|| existing.and_then(|bindings| bindings.clipboard.clone()))
+            .or_else(|| {
+                environment.clipboard_socket().and_then(|path| {
+                    validated_user_socket(path.to_str()?)
+                        .ok()
+                        .map(|socket| ClipboardBinding::WaylandDataControl { socket })
+                })
+            });
+        if let Some(clipboard) = clipboard {
+            used.clipboard = supplied.clipboard.is_some();
+            bindings.clipboard = Some(clipboard);
+        } else {
+            missing
+                .push("the compositor clipboard (override with --clipboard-socket SOCKET)".into());
+        }
+    }
+    if missing.is_empty() {
+        Ok(BindingResolution::Complete(bindings, used))
+    } else {
+        Ok(BindingResolution::Missing(missing))
+    }
+}
+
+fn requested_filesystem_mounts(request: &CapabilityRequest) -> Vec<(String, Option<String>)> {
+    let mut mounts = BTreeMap::<String, Option<String>>::new();
+    match &request.scope {
+        CapabilityScope::FilesystemRead(scope) => {
+            for mount in &scope.mounts {
+                mounts.insert(mount.label.clone(), mount.suggested_location.clone());
+            }
+        }
+        CapabilityScope::FilesystemWrite(scope) => {
+            for mount in &scope.mounts {
+                mounts.insert(mount.label.clone(), mount.suggested_location.clone());
+            }
+        }
+        CapabilityScope::AppearanceProvide(scope) => {
+            for mount in &scope.mounts {
+                mounts.insert(mount.label.clone(), mount.suggested_location.clone());
+            }
+        }
+        CapabilityScope::CommandRun(scope) => {
+            for command in &scope.commands {
+                for argument in &command.arguments {
+                    if let CommandArgument::ApprovedFile { mount, .. } = argument {
+                        mounts.entry(mount.clone()).or_default();
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    mounts.into_iter().collect()
+}
+
+fn binding_resources(bindings: &GrantBindings) -> Vec<String> {
+    let mut resources = bindings
+        .filesystem_mounts
+        .values()
+        .map(|binding| match binding {
+            FilesystemMountBinding::Path { path } => path.display().to_string(),
+            FilesystemMountBinding::StandardDirectory {
+                directory,
+                relative,
+            } => format!(
+                "{}:{} (resolved by the host)",
+                standard_directory_prefix(*directory),
+                relative.display()
+            ),
+        })
+        .chain(
+            bindings
+                .local_endpoints
+                .values()
+                .map(|binding| match binding {
+                    LocalEndpointBinding::UnixStream { path } => path.display().to_string(),
+                }),
+        )
+        .chain(bindings.clipboard.iter().map(|binding| match binding {
+            ClipboardBinding::WaylandDataControl { socket } => socket.display().to_string(),
+        }))
+        .chain(
+            bindings
+                .secrets
+                .iter()
+                .map(|(name, binding)| match binding {
+                    SecretBinding::SecretServiceItem { object_path } => {
+                        format!("{name} → {object_path}")
+                    }
+                }),
+        )
+        .collect::<Vec<_>>();
+    resources.sort();
+    resources.dedup();
+    resources
+}
+
+fn standard_directory_prefix(directory: StandardDirectoryBinding) -> &'static str {
+    match directory {
+        StandardDirectoryBinding::Home => "home",
+        StandardDirectoryBinding::XdgConfig => "xdg-config",
+        StandardDirectoryBinding::XdgData => "xdg-data",
+        StandardDirectoryBinding::XdgState => "xdg-state",
+        StandardDirectoryBinding::XdgCache => "xdg-cache",
+        StandardDirectoryBinding::XdgRuntime => "xdg-runtime",
+    }
+}
+
+fn validate_unused_install_bindings(
+    supplied: &GrantBindings,
+    used: &UsedInstallBindings,
+) -> Result<()> {
+    if let Some(label) = supplied
+        .filesystem_mounts
+        .keys()
+        .find(|label| !used.filesystem.contains(*label))
+    {
+        bail!("--bind supplied unknown or unused label `{label}`");
+    }
+    if let Some(label) = supplied
+        .local_endpoints
+        .keys()
+        .find(|label| !used.endpoints.contains(*label))
+    {
+        bail!("--endpoint supplied unknown or unused label `{label}`");
+    }
+    if let Some(name) = supplied
+        .secrets
+        .keys()
+        .find(|name| !used.secrets.contains(*name))
+    {
+        bail!("--secret supplied unknown or unused name `{name}`");
+    }
+    if supplied.clipboard.is_some() && !used.clipboard {
+        bail!("--clipboard-socket was supplied but no clipboard permission uses it");
+    }
+    Ok(())
+}
+
+fn review_install(package: &PackagePreview, plan: &InstallPlan, assume_yes: bool) -> Result<bool> {
+    let mut output = io::stdout().lock();
+    write_install_review(&mut output, package, plan)?;
+    if assume_yes {
+        return Ok(true);
+    }
+    if !io::stdin().is_terminal() {
+        bail!("installation requires confirmation; rerun interactively or pass --yes");
+    }
+    confirm_install(&mut io::stdin().lock(), &mut output)
+}
+
+fn write_install_review(
+    output: &mut impl Write,
+    package: &PackagePreview,
+    plan: &InstallPlan,
+) -> Result<()> {
+    writeln!(
+        output,
+        "Install {} {} and enable it?",
+        package.manifest.plugin.name, package.manifest.plugin.version
+    )?;
+    writeln!(
+        output,
+        "Source: {} ({})",
+        package.manifest.plugin.source,
+        origin_label(&plan.origin)
+    )?;
+    if plan.native {
+        writeln!(output, "\n  • Runs as an unrestricted native process")?;
+    }
+    if !plan.permissions.is_empty() {
+        writeln!(
+            output,
+            "\n{}:",
+            if plan.native {
+                "Declared access (not sandbox-enforced)"
+            } else {
+                "Permissions"
+            }
+        )?;
+        for permission in &plan.permissions {
+            writeln!(
+                output,
+                "  • {} [{}]{}",
+                capability_title(&permission.capability),
+                permission.capability,
+                if permission.reused {
+                    " (already approved)"
+                } else {
+                    ""
+                }
+            )?;
+            writeln!(output, "    {}", permission.reason)?;
+            for resource in &permission.resources {
+                writeln!(output, "    {resource}")?;
+            }
+        }
+    }
+    if !plan.skipped.is_empty() {
+        writeln!(output, "\nOptional features not configured:")?;
+        for permission in &plan.skipped {
+            writeln!(
+                output,
+                "  • {} — {}: {}",
+                permission.capability,
+                permission.reason,
+                permission.missing.join(", ")
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn capability_title(capability: &CapabilityId) -> &'static str {
+    match capability {
+        CapabilityId::ContextReadV1 => "Read desktop context",
+        CapabilityId::FilesystemReadV1 => "Read files",
+        CapabilityId::FilesystemWriteV1 => "Modify files",
+        CapabilityId::HttpRequestV1 => "Connect to network services",
+        CapabilityId::DbusCallV1 => "Control desktop services",
+        CapabilityId::DbusSubscribeV1 => "Observe desktop services",
+        CapabilityId::CommandRunV1 => "Run approved commands",
+        CapabilityId::ClipboardReadV1 => "Read the clipboard",
+        CapabilityId::ClipboardWriteV1 => "Change the clipboard",
+        CapabilityId::SecretReadV1 => "Read approved secrets",
+        CapabilityId::NotificationSendV1 => "Send notifications",
+        CapabilityId::UriOpenV1 => "Open approved links",
+        CapabilityId::LocalConnectV1 => "Connect to a local service",
+        CapabilityId::AppearanceProvideV1 => "Provide the Touch Bar appearance",
+        CapabilityId::Unknown(_) => "Request unsupported host access",
+    }
+}
+
+fn confirm_install(input: &mut impl BufRead, output: &mut impl Write) -> Result<bool> {
+    write!(output, "\nContinue? [Y/n] ")?;
+    output.flush()?;
+    let mut answer = String::new();
+    input.read_line(&mut answer)?;
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "" | "y" | "yes" => Ok(true),
+        "n" | "no" => Ok(false),
+        _ => bail!("answer must be yes or no"),
+    }
+}
+
+fn finish_install(
+    store: &mut PluginStore,
+    paths: &StorePaths,
+    package: &PackagePreview,
+    installed: touchbar_plugin_store::InstalledPlugin,
+    plan: InstallPlan,
+) -> Result<()> {
+    if installed.source != package.manifest.plugin.source
+        || installed.version != package.manifest.plugin.version
+        || installed.package_digest != package.package_digest
+    {
+        bail!("installed package differs from the reviewed package");
+    }
+    if !plan.grants.is_empty() {
+        GrantStore::update_records(&paths.grants, plan.grants)?;
+    }
+    let grants = GrantStore::load(&paths.grants)?;
+    let instance = PackageInstance {
+        source: installed.source.clone(),
+        version: installed.version.clone(),
+        digest: installed.package_digest.clone(),
+        provenance: installed.origin.provenance(),
+        runtime: match installed.runtime {
+            InstalledRuntime::Component => RuntimeKind::Component,
+            InstalledRuntime::Native => RuntimeKind::Native,
+        },
+    };
+    let policy = calculate_effective_policy(
+        &instance,
+        &package.requests,
+        &grants,
+        &SessionGrants::default(),
+        &CapabilityRegistry::v1(),
+    );
+    if policy.blocked {
+        bail!("required permissions were not granted; the plugin remains disabled");
+    }
+    store.set_enabled(&installed.source, true)?;
+    println!(
+        "Installed and enabled {} {}.",
+        package.manifest.plugin.name, package.manifest.plugin.version
+    );
+    reload_if_running();
     Ok(())
 }
 
@@ -3089,6 +3969,185 @@ mod tests {
         assert!(entry.is_none());
         assert!(install_source_from_catalog("missing", &catalog).is_err());
     }
+
+    #[test]
+    fn installer_resolves_only_host_known_default_locations() {
+        let temporary = tempfile::tempdir().unwrap();
+        let environment = InstallEnvironment {
+            home: Some(temporary.path().join("home")),
+            config: Some(temporary.path().join("config")),
+            data: Some(temporary.path().join("data")),
+            state: Some(temporary.path().join("state")),
+            cache: Some(temporary.path().join("cache")),
+            runtime: Some(temporary.path().join("runtime")),
+            system_data: Vec::new(),
+            wayland_display: Some("wayland-1".into()),
+        };
+        assert_eq!(
+            environment.directory_hint("xdg-state:omarchy/current"),
+            Some(temporary.path().join("state/omarchy/current"))
+        );
+        assert_eq!(
+            environment.directory_hint("Pictures"),
+            Some(temporary.path().join("home/Pictures"))
+        );
+        assert_eq!(
+            environment.endpoint_hint("$XDG_RUNTIME_DIR/example/service.sock"),
+            Some(temporary.path().join("runtime/example/service.sock"))
+        );
+        assert_eq!(
+            environment.clipboard_socket(),
+            Some(temporary.path().join("runtime/wayland-1"))
+        );
+        for hint in ["/etc", "home:../escape", "xdg-state:/absolute", "unknown"] {
+            assert_eq!(environment.directory_hint(hint), None, "resolved {hint}");
+        }
+    }
+
+    #[test]
+    fn installer_confirmation_defaults_to_yes_and_accepts_no() {
+        let mut prompt = Vec::new();
+        assert!(confirm_install(&mut io::Cursor::new(b"\n"), &mut prompt).unwrap());
+        assert!(String::from_utf8(prompt).unwrap().contains("[Y/n]"));
+        assert!(!confirm_install(&mut io::Cursor::new(b"no\n"), &mut Vec::new()).unwrap());
+        assert!(confirm_install(&mut io::Cursor::new(b"maybe\n"), &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn one_step_install_uses_manifest_default_and_enables_after_consent() {
+        let temporary = tempfile::tempdir().unwrap();
+        let package_root = temporary.path().join("package");
+        fs::create_dir_all(package_root.join("component")).unwrap();
+        fs::write(package_root.join("component/plugin.wasm"), b"component").unwrap();
+        fs::write(
+            package_root.join("component/appearance-provider.wasm"),
+            b"provider",
+        )
+        .unwrap();
+        fs::write(
+            package_root.join("touchbar-plugin.toml"),
+            r#"manifest_version = 1
+
+[plugin]
+name = "Install Test"
+version = "0.1.0"
+description = "Install flow fixture"
+license = "MIT"
+source = "github:alice/install-test"
+api = "^1.0"
+
+[runtime]
+kind = "component"
+entrypoint = "component/plugin.wasm"
+world = "touchbar:plugin/plugin@1.0.0"
+
+[[items]]
+id = "main"
+label = "Main"
+
+[[appearance-provider]]
+id = "desktop"
+label = "Desktop"
+entrypoint = "component/appearance-provider.wasm"
+world = "touchbar:plugin/appearance-provider@1.0.0"
+desktop_sessions = ["desktop"]
+mounts = ["desktop-current"]
+
+[[permission]]
+capability = "appearance.provide.v1"
+required = true
+reason = "Follow the current desktop palette"
+
+[permission.scope]
+providers = ["desktop"]
+maximum_file_bytes = 65536
+maximum_updates_per_second = 4
+
+[[permission.scope.mounts]]
+label = "desktop-current"
+suggested_location = "xdg-state:desktop/current"
+"#,
+        )
+        .unwrap();
+        let default_directory = temporary.path().join("state/desktop/current");
+        let override_directory = temporary.path().join("alternate/current");
+        fs::create_dir_all(&default_directory).unwrap();
+        fs::create_dir_all(&override_directory).unwrap();
+        let environment = InstallEnvironment {
+            home: Some(temporary.path().join("home")),
+            config: Some(temporary.path().join("config")),
+            data: Some(temporary.path().join("data")),
+            state: Some(temporary.path().join("state")),
+            cache: Some(temporary.path().join("cache")),
+            runtime: Some(temporary.path().join("runtime")),
+            system_data: Vec::new(),
+            wayland_display: None,
+        };
+        let paths = StorePaths::under(temporary.path().join("store"));
+        let mut store = PluginStore::open(paths.clone()).unwrap();
+        let preview = inspect_package(&package_root).unwrap().preview();
+        let origin = InstalledOrigin::LocalDevelopment;
+        let plan = plan_install(
+            &preview,
+            &origin,
+            &paths,
+            &GrantBindings::default(),
+            &environment,
+        )
+        .unwrap();
+        assert_eq!(plan.grants.len(), 1);
+        assert_eq!(
+            plan.grants[0].bindings.filesystem_mounts["desktop-current"],
+            FilesystemMountBinding::StandardDirectory {
+                directory: StandardDirectoryBinding::XdgState,
+                relative: PathBuf::from("desktop/current"),
+            }
+        );
+        let mut review = Vec::new();
+        write_install_review(&mut review, &preview, &plan).unwrap();
+        let review = String::from_utf8(review).unwrap();
+        assert!(review.contains("Provide the Touch Bar appearance"));
+        assert!(review.contains("appearance.provide.v1"));
+        assert!(review.contains("xdg-state:desktop/current (resolved by the host)"));
+        assert!(!review.contains("scope="));
+
+        let installed = store.install_directory(&package_root).unwrap();
+        assert!(!installed.enabled);
+        finish_install(&mut store, &paths, &preview, installed, plan).unwrap();
+        let source = preview.manifest.plugin.source.clone();
+        assert!(store.get(&source).unwrap().enabled);
+        let grants = GrantStore::load(&paths.grants).unwrap();
+        assert!(
+            grants
+                .get(&source, &CapabilityId::AppearanceProvideV1)
+                .is_some()
+        );
+        let repeated = plan_install(
+            &preview,
+            &origin,
+            &paths,
+            &GrantBindings::default(),
+            &environment,
+        )
+        .unwrap();
+        assert!(repeated.grants.is_empty());
+        assert!(repeated.permissions[0].reused);
+
+        let mut supplied = GrantBindings::default();
+        supplied.filesystem_mounts.insert(
+            "desktop-current".into(),
+            FilesystemMountBinding::from_directory(&override_directory).unwrap(),
+        );
+        let override_plan =
+            plan_install(&preview, &origin, &paths, &supplied, &environment).unwrap();
+        assert_eq!(
+            override_plan.grants[0].bindings.filesystem_mounts["desktop-current"],
+            FilesystemMountBinding::Path {
+                path: override_directory.canonicalize().unwrap(),
+            }
+        );
+    }
+
     #[test]
     fn consent_bindings_are_explicit_canonical_and_user_owned() {
         let temporary = tempfile::tempdir().unwrap();
@@ -3106,7 +4165,12 @@ mod tests {
             socket.to_string_lossy().into_owned(),
         ];
         let bindings = grant_bindings(&args).unwrap();
-        assert_eq!(bindings.filesystem_mounts["gallery"].path, directory);
+        assert_eq!(
+            bindings.filesystem_mounts["gallery"],
+            FilesystemMountBinding::Path {
+                path: directory.clone(),
+            }
+        );
         assert!(bindings.local_endpoints.contains_key("service"));
         assert!(bindings.secrets.contains_key("token"));
         assert!(bindings.clipboard.is_some());

@@ -5,7 +5,7 @@ use std::{
         fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd},
         unix::ffi::OsStrExt,
     },
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -20,7 +20,8 @@ use touchbar_broker_schema::{
     FilesystemStreamOpened, MAX_FILE_STREAM_CHUNK_BYTES, SchemaError,
 };
 use touchbar_policy::{
-    CapabilityId, CapabilityScope, FileKind, FilesystemMountBinding, FilesystemReadScope,
+    AppearanceProvideScope, CapabilityId, CapabilityScope, FileKind, FilesystemMountBinding,
+    FilesystemMountRequest, FilesystemReadScope, StandardDirectoryBinding,
 };
 use touchbar_protocol::broker_ipc::{BrokerErrorCode, BrokerResult};
 
@@ -321,9 +322,18 @@ fn validate_mount_and_path(
     scope: &FilesystemReadScope,
     mounts: &BTreeMap<String, FilesystemMountBinding>,
 ) -> Result<(), BrokerErrorCode> {
+    validate_requested_mount_and_path(mount, path, allow_empty, &scope.mounts, mounts)
+}
+
+fn validate_requested_mount_and_path(
+    mount: &str,
+    path: &str,
+    allow_empty: bool,
+    requested_mounts: &std::collections::BTreeSet<FilesystemMountRequest>,
+    mounts: &BTreeMap<String, FilesystemMountBinding>,
+) -> Result<(), BrokerErrorCode> {
     if mount.is_empty()
-        || !scope
-            .mounts
+        || !requested_mounts
             .iter()
             .any(|requested| requested.label == mount)
         || !mounts.contains_key(mount)
@@ -352,13 +362,22 @@ fn read_file(
     cancellation: &CancellationToken,
 ) -> Result<FilesystemFileChunk, BrokerErrorCode> {
     let scope = filesystem_scope(request)?;
+    read_file_with_limit(request, read, cancellation, scope.maximum_file_bytes)
+}
+
+fn read_file_with_limit(
+    request: &BackendRequest,
+    read: &FilesystemReadFile,
+    cancellation: &CancellationToken,
+    maximum_file_bytes: u64,
+) -> Result<FilesystemFileChunk, BrokerErrorCode> {
     let root = open_root(mount_root(request, &read.mount)?)?;
     let file = open_beneath(
         root.as_raw_fd(),
         &read.path,
         libc::O_RDONLY | libc::O_NONBLOCK,
     )?;
-    let metadata = validate_regular_file(file.as_raw_fd(), scope.maximum_file_bytes)?;
+    let metadata = validate_regular_file(file.as_raw_fd(), maximum_file_bytes)?;
     let total_size = u64::try_from(metadata.st_size).map_err(|_| BrokerErrorCode::BackendFailed)?;
     if let Some(reason) = cancellation.reason() {
         return Err(reason);
@@ -390,6 +409,40 @@ fn read_file(
         eof: end >= total_size,
         bytes,
     })
+}
+
+pub(crate) fn authorize_appearance_read(
+    request: &BackendRequest,
+) -> Result<FilesystemReadFile, BrokerErrorCode> {
+    if request.capability != CapabilityId::AppearanceProvideV1
+        || request.operation != FILESYSTEM_READ_FILE_OPERATION
+    {
+        return Err(BrokerErrorCode::InvalidRequest);
+    }
+    let CapabilityScope::AppearanceProvide(scope) = &request.authorized_scope else {
+        return Err(BrokerErrorCode::InvalidRequest);
+    };
+    let read = FilesystemReadFile::decode(&request.payload).map_err(schema_error)?;
+    validate_requested_mount_and_path(
+        &read.mount,
+        &read.path,
+        false,
+        &scope.mounts,
+        &request.bindings.filesystem_mounts,
+    )?;
+    if read.maximum_bytes > scope.maximum_file_bytes {
+        return Err(BrokerErrorCode::QuotaExceeded);
+    }
+    Ok(read)
+}
+
+pub(crate) fn execute_appearance_read(
+    request: &BackendRequest,
+    read: &FilesystemReadFile,
+    cancellation: &CancellationToken,
+    scope: &AppearanceProvideScope,
+) -> Result<FilesystemFileChunk, BrokerErrorCode> {
+    read_file_with_limit(request, read, cancellation, scope.maximum_file_bytes)
 }
 
 fn list_directory(
@@ -517,7 +570,23 @@ fn open_root(binding: &FilesystemMountBinding) -> Result<OwnedFd, BrokerErrorCod
 pub(crate) fn open_bound_mount(
     binding: &FilesystemMountBinding,
 ) -> Result<OwnedFd, BrokerErrorCode> {
-    let path = c_string(binding.path.as_os_str())?;
+    let path = match binding {
+        FilesystemMountBinding::Path { path } => path.clone(),
+        FilesystemMountBinding::StandardDirectory {
+            directory,
+            relative,
+        } => {
+            let root = standard_directory_root(*directory)?;
+            if *directory == StandardDirectoryBinding::XdgRuntime {
+                validate_xdg_runtime_directory(&root)?;
+            }
+            root.join(relative)
+        }
+    };
+    if !normalized_absolute_path(&path) {
+        return Err(BrokerErrorCode::OutOfScope);
+    }
+    let path = c_string(path.as_os_str())?;
     let how = OpenHow {
         flags: (libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW) as u64,
         mode: 0,
@@ -539,13 +608,73 @@ pub(crate) fn open_bound_mount(
     let descriptor = i32::try_from(descriptor).map_err(|_| os_error())?;
     let descriptor = owned_descriptor(descriptor)?;
     let metadata = descriptor_metadata(descriptor.as_raw_fd())?;
-    if metadata.st_mode & libc::S_IFMT != libc::S_IFDIR
-        || metadata.st_dev != binding.device
-        || metadata.st_ino != binding.inode
-    {
+    if metadata.st_mode & libc::S_IFMT != libc::S_IFDIR {
         return Err(BrokerErrorCode::OutOfScope);
     }
     Ok(descriptor)
+}
+
+fn standard_directory_root(
+    directory: StandardDirectoryBinding,
+) -> Result<PathBuf, BrokerErrorCode> {
+    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    let path = match directory {
+        StandardDirectoryBinding::Home => home(),
+        StandardDirectoryBinding::XdgConfig => std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| home().map(|path| path.join(".config"))),
+        StandardDirectoryBinding::XdgData => std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| home().map(|path| path.join(".local/share"))),
+        StandardDirectoryBinding::XdgState => std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| home().map(|path| path.join(".local/state"))),
+        StandardDirectoryBinding::XdgCache => std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| home().map(|path| path.join(".cache"))),
+        StandardDirectoryBinding::XdgRuntime => {
+            std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
+        }
+    }
+    .ok_or(BrokerErrorCode::OutOfScope)?;
+    normalized_absolute_path(&path)
+        .then_some(path)
+        .ok_or(BrokerErrorCode::OutOfScope)
+}
+
+fn validate_xdg_runtime_directory(path: &Path) -> Result<(), BrokerErrorCode> {
+    let path = c_string(path.as_os_str())?;
+    let how = OpenHow {
+        flags: (libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW) as u64,
+        mode: 0,
+        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+    };
+    // SAFETY: all syscall arguments point to initialized storage of the declared size.
+    let descriptor = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            &how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    let descriptor = owned_descriptor(i32::try_from(descriptor).map_err(|_| os_error())?)?;
+    let metadata = descriptor_metadata(descriptor.as_raw_fd())?;
+    // SAFETY: geteuid has no preconditions and retains no pointers.
+    let current_user = unsafe { libc::geteuid() };
+    if metadata.st_uid != current_user || metadata.st_mode & 0o077 != 0 {
+        return Err(BrokerErrorCode::OutOfScope);
+    }
+    Ok(())
+}
+
+fn normalized_absolute_path(path: &Path) -> bool {
+    path.is_absolute()
+        && path.components().enumerate().all(|(index, component)| {
+            (index == 0 && matches!(component, Component::RootDir))
+                || (index > 0 && matches!(component, Component::Normal(_)))
+        })
 }
 
 fn open_beneath(root: RawFd, path: &str, flags: i32) -> Result<OwnedFd, BrokerErrorCode> {
@@ -882,12 +1011,11 @@ mod tests {
         let linked_root = parent.path().join("linked-root");
         symlink(&root, &linked_root).unwrap();
         let mut linked_request = request(&root, "read-file", large.encode().unwrap(), 64);
-        linked_request
+        *linked_request
             .bindings
             .filesystem_mounts
             .get_mut("gallery")
-            .unwrap()
-            .path = linked_root;
+            .unwrap() = FilesystemMountBinding::Path { path: linked_root };
         assert_eq!(
             execute(&linked_request),
             BrokerResult::Error(BrokerErrorCode::OutOfScope)
@@ -895,7 +1023,7 @@ mod tests {
     }
 
     #[test]
-    fn mount_binding_rejects_intermediate_symlinks_inode_replacement_and_nested_mounts() {
+    fn mount_binding_rejects_intermediate_symlinks_and_nested_mounts_but_follows_its_path() {
         let parent = tempdir().unwrap();
         let real_parent = parent.path().join("real");
         let root = real_parent.join("root");
@@ -916,12 +1044,13 @@ mod tests {
         );
         let alias = parent.path().join("alias");
         symlink(&real_parent, &alias).unwrap();
-        through_intermediate_symlink
+        *through_intermediate_symlink
             .bindings
             .filesystem_mounts
             .get_mut("gallery")
-            .unwrap()
-            .path = alias.join("root");
+            .unwrap() = FilesystemMountBinding::Path {
+            path: alias.join("root"),
+        };
         assert_eq!(
             execute(&through_intermediate_symlink),
             BrokerResult::Error(BrokerErrorCode::OutOfScope)
@@ -936,10 +1065,7 @@ mod tests {
         fs::rename(&root, real_parent.join("old-root")).unwrap();
         fs::create_dir(&root).unwrap();
         fs::write(root.join("value"), b"attacker replacement").unwrap();
-        assert_eq!(
-            execute(&replaced),
-            BrokerResult::Error(BrokerErrorCode::OutOfScope)
-        );
+        assert!(matches!(execute(&replaced), BrokerResult::Success { .. }));
 
         let proc_read = FilesystemReadFile {
             mount: "gallery".into(),
@@ -1148,8 +1274,9 @@ mod tests {
             fs::remove_file(parked_parent.join("value")).unwrap();
             fs::rename(&parked_parent, root.join("inside")).unwrap();
 
-            // Replacing the grant-root pathname also leaves the active stream
-            // attached to the original device/inode-bound root.
+            // Replacing the grant-root pathname also leaves this already-open
+            // stream attached to the descriptor it acquired at open time.
+            // A later operation will resolve the logical grant path again.
             fs::write(&value, &original).unwrap();
             let begin = request(
                 &root,

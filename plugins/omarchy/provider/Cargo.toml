@@ -1,0 +1,12 @@
+[package]
+name = "touchbar-omarchy-appearance-provider"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+toml.workspace = true
+touchbar-appearance-provider-sdk = { path = "../../../crates/touchbar-appearance-provider-sdk" }

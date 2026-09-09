@@ -3286,6 +3286,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
+name = "touchbar-appearance-provider-sdk"
+version = "0.1.0"
+dependencies = [
+ "touchbar-broker-schema",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "touchbar-broker-component-demo"
 version = "0.1.0"
 dependencies = [
@@ -3480,6 +3488,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "touchbar-omarchy-appearance-provider"
+version = "0.1.0"
+dependencies = [
+ "toml",
+ "touchbar-appearance-provider-sdk",
+]
+
+[[package]]
 name = "touchbar-package"
 version = "0.1.0"
 dependencies = [
@@ -3611,6 +3627,7 @@ dependencies = [
  "memmap2",
  "tempfile",
  "toml",
+ "touchbar-broker-schema",
  "touchbar-control",
  "touchbar-layout",
  "touchbar-model",

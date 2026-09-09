@@ -74,8 +74,8 @@ screenshots/
 - version, description, license, authors, and host API requirement;
 - component world and artifact, or target-specific native artifacts;
 - multiple stable item contributions;
-- declarative appearance providers with exact desktop matching, a
-  permission-bound source mount, and package-local color-key mapping;
+- sandboxed appearance-provider workers with exact desktop matching,
+  purpose-specific approved mounts, and typed semantic publication;
 - bounded package-local presentation bars, with container sizing, ordered
   item/space elements, presentation sizing per item, an optional principal,
   compositor-managed selection dismissal, and per-item tap/hold references;
@@ -168,9 +168,9 @@ crates or stale web documentation.
 Any public GitHub repository can be installed:
 
 ```text
-touchbarctl plugin add github:alice/touchbar-media
-touchbarctl plugin add https://github.com/alice/touchbar-media
-touchbarctl plugin add github:alice/touchbar-media --version 1.2.3
+touchbarctl plugin install media
+touchbarctl plugin install github:alice/touchbar-media
+touchbarctl plugin install https://github.com/alice/touchbar-media --version 1.2.3
 ```
 
 Stable installation downloads a standard package asset from a compatible
@@ -178,7 +178,11 @@ GitHub Release. It never builds or executes the default branch. Before running
 anything, the installer verifies the release asset digest and available
 attestation, validates the manifest, checks host compatibility, displays
 permissions, and records the exact repository identity, version, tag, and
-digest in a lock file. Immutable releases are recommended.
+digest in a lock file. The plugin may provide default bindings using a small
+host-resolved location vocabulary. The installer displays the exact resulting
+authority, asks once, writes the complete grant batch atomically, and enables
+the package last. `plugin add`, `plugin permission`, and `plugin enable` remain
+available as low-level primitives. Immutable releases are recommended.
 
 Local `--path` installation is visibly marked as an unverified development
 source. Native development sources receive a stronger warning.

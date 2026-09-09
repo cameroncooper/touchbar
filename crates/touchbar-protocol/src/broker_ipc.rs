@@ -328,6 +328,19 @@ impl Seqpacket {
             .transpose()
     }
 
+    /// Sends one application-defined packet over this authenticated local channel.
+    ///
+    /// This is intended for narrowly typed supervisor-owned side channels. Callers
+    /// remain responsible for validating the payload with their protocol schema.
+    pub fn send_payload(&self, payload: &[u8]) -> Result<(), TransportError> {
+        self.send_packet(payload)
+    }
+
+    /// Receives one application-defined packet without waiting for input.
+    pub fn try_recv_payload(&self) -> Result<Option<Vec<u8>>, TransportError> {
+        self.recv_packet_with_flags(libc::MSG_DONTWAIT)
+    }
+
     pub fn peer_credentials(&self) -> Result<PeerCredentials, TransportError> {
         let mut credentials = libc::ucred {
             pid: 0,

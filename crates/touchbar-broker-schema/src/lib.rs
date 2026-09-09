@@ -41,6 +41,7 @@ const CLIPBOARD_VALUE_MAGIC: [u8; 8] = *b"OMCLPVL1";
 const CONTEXT_READ_MAGIC: [u8; 8] = *b"OMCTXRQ1";
 const CONTEXT_SNAPSHOT_MAGIC: [u8; 8] = *b"OMCTXSN1";
 const CONTEXT_OPENED_MAGIC: [u8; 8] = *b"OMCTXOP1";
+const APPEARANCE_PUBLISH_MAGIC: [u8; 8] = *b"OMAPPPB1";
 const HTTP_REQUEST_MAGIC: [u8; 8] = *b"OMHTTPQ1";
 const HTTP_RESPONSE_MAGIC: [u8; 8] = *b"OMHTTPR1";
 const HTTP_STREAM_OPENED_MAGIC: [u8; 8] = *b"OMHTTPO1";
@@ -74,6 +75,90 @@ pub const MAX_CLIPBOARD_BYTES: usize = 48 * 1024;
 pub const MAX_CLIPBOARD_MIME_BYTES: usize = 128;
 pub const MAX_CONTEXT_FACTS: usize = 32;
 pub const MAX_CONTEXT_VALUE_BYTES: usize = 256;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AppearanceScheme {
+    Dark,
+    Light,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AppearanceColor {
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppearancePublish {
+    pub provider: String,
+    pub scheme: AppearanceScheme,
+    pub background: AppearanceColor,
+    pub foreground: AppearanceColor,
+    pub accent: AppearanceColor,
+    pub selection: AppearanceColor,
+    pub muted: AppearanceColor,
+    pub destructive: AppearanceColor,
+}
+
+impl AppearancePublish {
+    pub fn encode(&self) -> Result<Vec<u8>, SchemaError> {
+        if self.provider.is_empty() {
+            return Err(SchemaError::Malformed);
+        }
+        let mut encoder = Encoder::new(APPEARANCE_PUBLISH_MAGIC);
+        encoder.string(&self.provider)?;
+        encoder.byte(match self.scheme {
+            AppearanceScheme::Dark => 0,
+            AppearanceScheme::Light => 1,
+        });
+        for color in [
+            self.background,
+            self.foreground,
+            self.accent,
+            self.selection,
+            self.muted,
+            self.destructive,
+        ] {
+            encoder.byte(color.red);
+            encoder.byte(color.green);
+            encoder.byte(color.blue);
+        }
+        encoder.finish()
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, SchemaError> {
+        let mut decoder = Decoder::new(bytes, APPEARANCE_PUBLISH_MAGIC)?;
+        let provider = decoder.string()?;
+        if provider.is_empty() {
+            return Err(SchemaError::Malformed);
+        }
+        let scheme = match decoder.byte()? {
+            0 => AppearanceScheme::Dark,
+            1 => AppearanceScheme::Light,
+            _ => return Err(SchemaError::Malformed),
+        };
+        let mut color = || {
+            Ok(AppearanceColor {
+                red: decoder.byte()?,
+                green: decoder.byte()?,
+                blue: decoder.byte()?,
+            })
+        };
+        let value = Self {
+            provider,
+            scheme,
+            background: color()?,
+            foreground: color()?,
+            accent: color()?,
+            selection: color()?,
+            muted: color()?,
+            destructive: color()?,
+        };
+        decoder.finish()?;
+        Ok(value)
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContextReadRequest {
@@ -3021,4 +3106,59 @@ mod tests {
             Err(SchemaError::Malformed)
         );
     }
+}
+#[test]
+fn appearance_publication_is_typed_bounded_and_strict() {
+    let publication = AppearancePublish {
+        provider: "desktop-theme".into(),
+        scheme: AppearanceScheme::Dark,
+        background: AppearanceColor {
+            red: 1,
+            green: 2,
+            blue: 3,
+        },
+        foreground: AppearanceColor {
+            red: 4,
+            green: 5,
+            blue: 6,
+        },
+        accent: AppearanceColor {
+            red: 7,
+            green: 8,
+            blue: 9,
+        },
+        selection: AppearanceColor {
+            red: 10,
+            green: 11,
+            blue: 12,
+        },
+        muted: AppearanceColor {
+            red: 13,
+            green: 14,
+            blue: 15,
+        },
+        destructive: AppearanceColor {
+            red: 16,
+            green: 17,
+            blue: 18,
+        },
+    };
+    assert_eq!(
+        AppearancePublish::decode(&publication.encode().unwrap()),
+        Ok(publication.clone())
+    );
+    let mut trailing = publication.encode().unwrap();
+    trailing.push(0);
+    assert_eq!(
+        AppearancePublish::decode(&trailing),
+        Err(SchemaError::Malformed)
+    );
+    assert_eq!(
+        AppearancePublish {
+            provider: String::new(),
+            ..publication
+        }
+        .encode(),
+        Err(SchemaError::Malformed)
+    );
 }

@@ -4217,10 +4217,8 @@ fn replay_filesystem_bindings(permission: &CapabilityRequest) -> Result<GrantBin
         .map(|mount| {
             (
                 mount.label.clone(),
-                FilesystemMountBinding {
+                FilesystemMountBinding::Path {
                     path: PathBuf::from("/__touchbar_replay_never_open__"),
-                    device: 0,
-                    inode: 0,
                 },
             )
         })
@@ -4241,10 +4239,8 @@ fn replay_filesystem_write_bindings(permission: &CapabilityRequest) -> Result<Gr
         .map(|mount| {
             (
                 mount.label.clone(),
-                FilesystemMountBinding {
+                FilesystemMountBinding::Path {
                     path: PathBuf::from("/__touchbar_replay_never_open__"),
-                    device: 0,
-                    inode: 0,
                 },
             )
         })
